@@ -68,6 +68,7 @@ try:
         controlnet=cnet,
         torch_dtype=torch.float16
     ).to(device)
+    sd.enable_xformers_memory_efficient_attention()
     sd.enable_model_cpu_offload()  # save VRAM
 
     # 4) Single-image-to-mesh model

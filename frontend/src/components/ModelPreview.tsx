@@ -11,7 +11,7 @@ export default function ModelPreview({ objB64 }: ModelPreviewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
-  const controlsRef = useRef<OrbitControls | null>(null);
+  const controlsRef = useRef<any>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -58,7 +58,7 @@ export default function ModelPreview({ objB64 }: ModelPreviewProps) {
 
     loader.load(
       objUrl,
-      (object) => {
+      (object: THREE.Object3D) => {
         // Center the model
         const box = new THREE.Box3().setFromObject(object);
         const center = box.getCenter(new THREE.Vector3());
@@ -74,7 +74,7 @@ export default function ModelPreview({ objB64 }: ModelPreviewProps) {
         URL.revokeObjectURL(objUrl);
       },
       undefined,
-      (error) => {
+      (error: any) => {
         console.error('Error loading OBJ:', error);
         URL.revokeObjectURL(objUrl);
       }
