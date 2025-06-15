@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/.idea/Mono3d-Backend.iml" filepath="$PROJECT_DIR$/.idea/Mono3d-Backend.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../mono3d-frontend/.idea/mono3d-frontend.iml" filepath="$PROJECT_DIR$/../mono3d-frontend/.idea/mono3d-frontend.iml" />
+    </modules>
+  </component>
+</project>
