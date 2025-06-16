@@ -1,0 +1,2 @@
+Requirement already satisfied: scipy in c:\users\aniru\miniconda3\envs\mono3d\lib\site-packages (1.15.3)
+Requirement already satisfied: numpy<2.5,>=1.23.5 in c:\users\aniru\miniconda3\envs\mono3d\lib\site-packages (from scipy) (2.2.6)

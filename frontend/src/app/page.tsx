@@ -7,8 +7,11 @@ import { toast } from "react-hot-toast";
 
 const ModelPreview = dynamic(
   () => import("@/components/ModelPreview"),
-  { ssr: false }               // don’t server-render Three.js
+  { ssr: false }
+    // don't server-render Three.js
 );
+
+console.log("NEXT_PUBLIC_BACKEND_ENDPOINT:", process.env.NEXT_PUBLIC_BACKEND_ENDPOINT);
 
 export default function Home() {
   // ───────────────────────────────── state ──────────────────────────────────

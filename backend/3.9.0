@@ -1,0 +1,7 @@
+Collecting trimesh
+  Downloading trimesh-4.6.12-py3-none-any.whl.metadata (18 kB)
+Requirement already satisfied: numpy>=1.20 in c:\users\aniru\miniconda3\envs\mono3d\lib\site-packages (from trimesh) (2.2.6)
+Downloading trimesh-4.6.12-py3-none-any.whl (711 kB)
+   ---------------------------------------- 712.0/712.0 kB 14.5 MB/s eta 0:00:00
+Installing collected packages: trimesh
+Successfully installed trimesh-4.6.12

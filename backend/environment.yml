@@ -1,0 +1,25 @@
+name: mono3d
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pytorch=2.0.1
+  - torchvision=0.15.2
+  - torchaudio=2.0.2
+  - pytorch-cuda=11.7
+  - flask
+  - flask-cors
+  - pillow
+  - numpy
+  - scipy
+  - pip
+  - pip:
+    - transformers==4.30.2
+    - diffusers==0.19.0
+    - controlnet-aux==0.0.6
+    - mediapipe>=0.10.0
+    - timm>=0.6.0
+    - trimesh>=3.9.0 
