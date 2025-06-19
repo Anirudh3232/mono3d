@@ -7,6 +7,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
 from functools import wraps
+from torch.cuda.amp import autocast, nullcontext
 
 # ─────────────────────────── Hot‑patch dependencies ────────────────────────────
 # 1) Create mock cache classes
@@ -134,16 +135,15 @@ try:
 
     logger.info("Loading TripoSR …"); _flush()
     os.makedirs(os.path.join(TSR_PATH,"checkpoints"),exist_ok=True)
-    # Load TripoSR on CPU and force all components to CPU
-    app.triposr=TSR.from_pretrained(
-        "stabilityai/TripoSR",config_name="config.yaml",weight_name="model.ckpt"
-    ).cpu().eval()
-    
-    # Force all model components to CPU
-    for param in app.triposr.parameters():
-        param.data = param.data.cpu()
-    for buffer in app.triposr.buffers():
-        buffer.data = buffer.data.cpu()
+    # Load TripoSR on GPU with mixed precision
+    app.triposr = TSR.from_pretrained(
+        "stabilityai/TripoSR",
+        config_name="config.yaml",
+        weight_name="model.ckpt"
+    ).to(device)
+    if device == "cuda":
+        app.triposr = app.triposr.half()  # Use half precision on GPU
+    app.triposr.eval()
 
     logger.info("✅ Models ready"); _flush()
 
@@ -179,18 +179,18 @@ try:
                 ).images[0]
             del edge; clear_gpu_memory()
 
-            # C) Scene codes - use CPU for TripoSR to avoid device conflicts
-            codes = app.triposr([concept], device="cpu")
-            del concept; gc.collect()
+            # C) Scene codes - use same device as model
+            with torch.cuda.amp.autocast() if device == "cuda" else nullcontext():
+                codes = app.triposr([concept], device=device)
+                logger.info(f"Codes device: {codes.device}")
+            del concept; clear_gpu_memory()
 
-            # D) Mesh extraction - ensure codes are on CPU for mesh extraction
+            # D) Mesh extraction
             res = 32 if preview else 128
             with torch.no_grad():
-                # Ensure codes are on CPU for mesh extraction
-                if codes.device != torch.device('cpu'):
-                    codes = codes.cpu()
-                meshes = app.triposr.extract_mesh(codes, resolution=res)
-            del codes; gc.collect()
+                with torch.cuda.amp.autocast() if device == "cuda" else nullcontext():
+                    meshes = app.triposr.extract_mesh(codes, resolution=res)
+            del codes; clear_gpu_memory()
 
             # Export OBJ
             mesh_bytes = meshes[0].export(file_type="obj")
