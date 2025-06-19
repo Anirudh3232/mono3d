@@ -14,6 +14,11 @@ for _n in ("Cache", "DynamicCache", "EncoderDecoderCache"):
     if not hasattr(_tf, _n):
         setattr(_tf, _n, types.SimpleNamespace)
 
+# Fix diffusers/huggingface_hub mismatch
+import huggingface_hub as _hf_hub
+if not hasattr(_hf_hub, "cached_download"):
+    _hf_hub.cached_download = _hf_hub.hf_hub_download
+
 _acc_mem = importlib.import_module("accelerate.utils.memory")
 if not hasattr(_acc_mem, "clear_device_cache"):
     _acc_mem.clear_device_cache = lambda *a, **k: None
