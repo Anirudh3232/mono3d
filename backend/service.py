@@ -170,7 +170,7 @@ try:
             mesh_bytes = mesh_bytes.encode()
 
         clear_gpu_memory()
-        return jsonify({"mesh": base64.b64encode(mesh_bytes).decode()})({"mesh": base64.b64encode(mesh_bytes).decode()})
+        return jsonify({"mesh": base64.b64encode(mesh_bytes).decode()}).decode()})
 
     if __name__ == "__main__":
         app.run(host="0.0.0.0", port=5000)
