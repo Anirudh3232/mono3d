@@ -159,12 +159,12 @@ try:
 
         # D) Extract mesh – keep all tensors on a single device
         preview = data.get("preview", True)
-        if preview:
+      if preview:
             scene_codes = scene_codes.to(device)
-            meshes = app.triposr.extract_mesh(scene_codes, resolution=64, device=device)
+            meshes = app.triposr.extract_mesh(scene_codes, resolution=64)
         else:
             scene_codes_cpu = scene_codes.cpu()
-            meshes = app.triposr.cpu().extract_mesh(scene_codes_cpu, resolution=128, device="cpu")
+            meshes = app.triposr.cpu().extract_mesh(scene_codes_cpu, resolution=128)
 
         mesh_bytes = meshes[0].export(file_type="obj")
         if isinstance(mesh_bytes, str):
