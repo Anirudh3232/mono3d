@@ -106,24 +106,36 @@ try:
 
             prompt=data.get("prompt","a clean 3‑D asset"); preview=data.get("preview",True)
 
-            # A) Canny edges
-            edge=app.edge_det(pil)
-            
-            # B) SD → concept (no_grad to save RAM)
+                        # A) Canny edges
+            edge = app.edge_det(pil)
+            del pil                    # free PIL asap
+
+            # B) SD → concept (no_grad, fewer steps to save VRAM)
             with torch.no_grad():
-                col=app.sd(prompt, image=edge, num_inference_steps=30, guidance_scale=7.5).images[0]
-            del edge; clear_gpu_memory()
+                sd_out = app.sd(
+                    prompt,
+                    image=edge,
+                    num_inference_steps=20,   # was 30
+                    guidance_scale=7.5
+                )
+            col = sd_out.images[0]
+            del edge, sd_out; clear_gpu_memory()
 
             # C) concept → scene codes (CPU to avoid mismatch / OOM)
-            codes_cpu=app.triposr([col], device="cpu")
-            res=64 if preview else 128
-            meshes=app.triposr.extract_mesh(codes_cpu, resolution=res)
+            codes_cpu = app.triposr([col], device="cpu")
+            del col; gc.collect()
 
-            mesh_bytes=meshes[0].export(file_type="obj")
-            if isinstance(mesh_bytes,str):
-                mesh_bytes=mesh_bytes.encode()
+            # D) Mesh extraction (lower preview resolution 32 → smaller RAM)
+            res = 32 if preview else 128
+            with torch.no_grad():
+                meshes = app.triposr.extract_mesh(codes_cpu, resolution=res)
+            del codes_cpu; gc.collect()
+
+            mesh_bytes = meshes[0].export(file_type="obj")
+            if isinstance(mesh_bytes, str):
+                mesh_bytes = mesh_bytes.encode()
             clear_gpu_memory()
-            return jsonify({"mesh":base64.b64encode(mesh_bytes).decode()})
+            return jsonify({"mesh": base64.b64encode(mesh_bytes).decode()})({"mesh":base64.b64encode(mesh_bytes).decode()})
         except Exception as e:
             logger.error("Error in /generate", exc_info=True)
             clear_gpu_memory()
