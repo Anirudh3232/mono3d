@@ -157,6 +157,7 @@ try:
         scene_codes = app.triposr([color_img], device=device)
 
         # D) Extract mesh – keep all tensors on a single device
+        preview = data.get("preview", True)
         if preview:
             scene_codes = scene_codes.to(device)
             meshes = app.triposr.extract_mesh(scene_codes, resolution=64, device=device)
@@ -164,10 +165,12 @@ try:
             scene_codes_cpu = scene_codes.cpu()
             meshes = app.triposr.cpu().extract_mesh(scene_codes_cpu, resolution=128, device="cpu")
 
-        mesh_bytes = meshes[0].export(file_type="obj") mesh_bytes.encode()
+        mesh_bytes = meshes[0].export(file_type="obj")
+        if isinstance(mesh_bytes, str):
+            mesh_bytes = mesh_bytes.encode()
 
         clear_gpu_memory()
-        return jsonify({"mesh": base64.b64encode(mesh_bytes).decode()})
+        return jsonify({"mesh": base64.b64encode(mesh_bytes).decode()})({"mesh": base64.b64encode(mesh_bytes).decode()})
 
     if __name__ == "__main__":
         app.run(host="0.0.0.0", port=5000)
