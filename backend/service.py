@@ -174,23 +174,13 @@ try:
             del edge; clear_gpu_memory()
 
             # C) Scene codes - ensure concept is on the same device as TripoSR
-            if device == "cuda":
-                # Convert PIL image to tensor and move to CUDA
-                import torchvision.transforms as transforms
-                transform = transforms.ToTensor()
-                concept_tensor = transform(concept).unsqueeze(0).to(device)
-                codes = app.triposr(concept_tensor, device=device)
-            else:
-                codes = app.triposr([concept], device="cpu")
+            codes = app.triposr([concept], device=device)
             del concept; gc.collect()
 
             # D) Mesh extraction
             res = 32 if preview else 128
             with torch.no_grad():
-                if device == "cuda":
-                    meshes = app.triposr.extract_mesh(codes.to(device), resolution=res)
-                else:
-                    meshes = app.triposr.extract_mesh(codes, resolution=res)
+                meshes = app.triposr.extract_mesh(codes, resolution=res)
             del codes; gc.collect()
 
             # Export OBJ
