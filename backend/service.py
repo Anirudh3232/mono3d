@@ -2,7 +2,7 @@ from typing import Callable, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
-import sys, os, base64, io, gc, time, types, importlib, logging
+import sys, os, base64, io, gc, time, types, importlib, logging, atexit
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
@@ -20,8 +20,14 @@ if not hasattr(_acc_mem, "clear_device_cache"):
 # ───────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s - %(levelname)s - %(message)s")
+                    format="%(asctime)s - %(levelname)s - %(message)s",
+                    handlers=[logging.StreamHandler(sys.stdout)])
 logger = logging.getLogger(__name__)
+
+def _flush():
+    for h in logger.handlers:
+        h.flush()
+atexit.register(_flush)
 
 # ─────────────────────────── Helpers ───────────────────────────────────
 
@@ -36,13 +42,13 @@ def timing(fn):
     @wraps(fn)
     def _wrap(*a, **kw):
         t0=time.time(); out=fn(*a, **kw)
-        logger.info(f"{fn.__name__} took {time.time()-t0:.2f}s")
+        logger.info(f"{fn.__name__} took {time.time()-t0:.2f}s"); _flush()
         return out
     return _wrap
 
 print("Starting service initialization …")
 try:
-    logger.info("Importing diffusers …")
+    logger.info("Importing diffusers …"); _flush()
     from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
     from controlnet_aux import CannyDetector
 
@@ -69,10 +75,10 @@ try:
         torch.backends.cuda.matmul.allow_tf32=True
         torch.backends.cudnn.allow_tf32=True
 
-    logger.info("Loading edge detector …");   app.edge_det=CannyDetector()
-    logger.info("Loading ControlNet …");     app.cnet=ControlNetModel.from_pretrained(
+    logger.info("Loading edge detector …");   _flush();   app.edge_det=CannyDetector()
+    logger.info("Loading ControlNet …");     _flush();   app.cnet=ControlNetModel.from_pretrained(
         "lllyasviel/sd-controlnet-canny", torch_dtype=torch.float16).to(device)
-    logger.info("Loading Stable Diffusion …")
+    logger.info("Loading Stable Diffusion …"); _flush()
     app.sd=StableDiffusionControlNetPipeline.from_pretrained(
         "runwayml/stable-diffusion-v1-5", controlnet=app.cnet,
         torch_dtype=torch.float16).to(device)
@@ -82,11 +88,11 @@ try:
         logger.warning("xformers not available — plain attention")
     app.sd.enable_model_cpu_offload(); app.sd.enable_attention_slicing()
 
-    logger.info("Loading TripoSR …")
+    logger.info("Loading TripoSR …"); _flush()
     os.makedirs(os.path.join(TSR_PATH,"checkpoints"),exist_ok=True)
     app.triposr=TSR.from_pretrained("stabilityai/TripoSR",config_name="config.yaml",weight_name="model.ckpt").cpu().eval()
 
-    logger.info("✅ Models ready")
+    logger.info("✅ Models ready"); _flush()
 
     # ───────────── /generate ─────────────
     @app.post("/generate")
@@ -106,38 +112,31 @@ try:
 
             prompt=data.get("prompt","a clean 3‑D asset"); preview=data.get("preview",True)
 
-                        # A) Canny edges
-            edge = app.edge_det(pil)
-            del pil                    # free PIL asap
+            # A) Canny edges (very cheap)
+            edge = app.edge_det(pil); del pil
 
-            # B) SD → concept (no_grad, fewer steps to save VRAM)
+            # B) SD → concept  (no_grad, 20 steps)
             with torch.no_grad():
-                sd_out = app.sd(
-                    prompt,
-                    image=edge,
-                    num_inference_steps=20,   # was 30
-                    guidance_scale=7.5
-                )
-            col = sd_out.images[0]
-            del edge, sd_out; clear_gpu_memory()
+                concept = app.sd(prompt, image=edge, num_inference_steps=20, guidance_scale=7.5).images[0]
+            del edge; clear_gpu_memory()
 
-            # C) concept → scene codes (CPU to avoid mismatch / OOM)
-            codes_cpu = app.triposr([col], device="cpu")
-            del col; gc.collect()
+            # C) concept → scene codes (CPU)
+            codes = app.triposr([concept], device="cpu")
+            del concept; gc.collect()
 
-            # D) Mesh extraction (lower preview resolution 32 → smaller RAM)
+            # D) Mesh extraction (32/128 res)
             res = 32 if preview else 128
             with torch.no_grad():
-                meshes = app.triposr.extract_mesh(codes_cpu, resolution=res)
-            del codes_cpu; gc.collect()
+                meshes = app.triposr.extract_mesh(codes, resolution=res)
+            del codes; gc.collect()
 
             mesh_bytes = meshes[0].export(file_type="obj")
             if isinstance(mesh_bytes, str):
                 mesh_bytes = mesh_bytes.encode()
-            clear_gpu_memory()
-            return jsonify({"mesh": base64.b64encode(mesh_bytes).decode()})({"mesh":base64.b64encode(mesh_bytes).decode()})
+            clear_gpu_memory(); _flush()
+            return jsonify({"mesh":base64.b64encode(mesh_bytes).decode()})
         except Exception as e:
-            logger.error("Error in /generate", exc_info=True)
+            logger.error("Error in /generate", exc_info=True); _flush()
             clear_gpu_memory()
             return jsonify({"error":str(e)}),500
 
@@ -145,7 +144,7 @@ try:
         app.run(host="0.0.0.0", port=5000)
 
 except Exception:
-    logger.error("❌ Error during initialization", exc_info=True)
+    logger.error("❌ Error during initialization", exc_info=True); _flush()
     raise
 
 # ───────────── TripoSR helpers (unchanged) ─────────────
