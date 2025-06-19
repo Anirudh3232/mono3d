@@ -9,24 +9,56 @@ from PIL import Image
 from functools import wraps
 
 # ─────────────────────────── Hot‑patch dependencies ────────────────────────────
-# 1) Ensure top-level transformers exports
+# 1) Create mock cache classes
+class MockCache:
+    def __init__(self, *args, **kwargs):
+        pass
+    def update(self, *args, **kwargs):
+        pass
+    def get_decoder_cache(self, *args, **kwargs):
+        return self
+    def get_encoder_cache(self, *args, **kwargs):
+        return self
+
+class MockEncoderDecoderCache(MockCache):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    @property
+    def encoder(self):
+        return self
+    @property
+    def decoder(self):
+        return self
+
+# 2) Patch transformers main module
 import transformers
 for _n in ("Cache", "DynamicCache", "EncoderDecoderCache"):
     if not hasattr(transformers, _n):
-        setattr(transformers, _n, types.SimpleNamespace)
-# 2) Also patch transformers.cache_utils so that `from transformers.cache_utils import EncoderDecoderCache` works
+        setattr(transformers, _n, MockEncoderDecoderCache)
+
+# 3) Patch transformers.cache_utils
 try:
     import transformers.cache_utils as _tcu
     for _n in ("Cache", "DynamicCache", "EncoderDecoderCache"):
         if not hasattr(_tcu, _n):
-            setattr(_tcu, _n, types.SimpleNamespace)
+            setattr(_tcu, _n, MockEncoderDecoderCache)
 except ImportError:
     pass
-# 3) Fix diffusers/huggingface_hub mismatch
+
+# 4) Patch transformers.models.encoder_decoder
+try:
+    import transformers.models.encoder_decoder as _ted
+    if not hasattr(_ted, "EncoderDecoderCache"):
+        setattr(_ted, "EncoderDecoderCache", MockEncoderDecoderCache)
+except ImportError:
+    pass
+
+# 5) Fix diffusers/huggingface_hub mismatch
 import huggingface_hub as _hf_hub
 if not hasattr(_hf_hub, "cached_download"):
     _hf_hub.cached_download = _hf_hub.hf_hub_download
-# 4) Patch accelerate for peft compatibility
+
+# 6) Patch accelerate for peft compatibility
 _acc_mem = importlib.import_module("accelerate.utils.memory")
 if not hasattr(_acc_mem, "clear_device_cache"):
     _acc_mem.clear_device_cache = lambda *a, **k: None
@@ -102,10 +134,10 @@ try:
 
     logger.info("Loading TripoSR …"); _flush()
     os.makedirs(os.path.join(TSR_PATH,"checkpoints"),exist_ok=True)
-    # Load TripoSR on CPU by default
+    # Load TripoSR on the same device as other models
     app.triposr=TSR.from_pretrained(
         "stabilityai/TripoSR",config_name="config.yaml",weight_name="model.ckpt"
-    ).cpu().eval()
+    ).to(device).eval()
 
     logger.info("✅ Models ready"); _flush()
 
@@ -141,9 +173,13 @@ try:
                 ).images[0]
             del edge; clear_gpu_memory()
 
-            # C) Scene codes
-            if preview and device=="cuda":
-                codes = app.triposr([concept], device=device)
+            # C) Scene codes - ensure concept is on the same device as TripoSR
+            if device == "cuda":
+                # Convert PIL image to tensor and move to CUDA
+                import torchvision.transforms as transforms
+                transform = transforms.ToTensor()
+                concept_tensor = transform(concept).unsqueeze(0).to(device)
+                codes = app.triposr(concept_tensor, device=device)
             else:
                 codes = app.triposr([concept], device="cpu")
             del concept; gc.collect()
@@ -151,7 +187,7 @@ try:
             # D) Mesh extraction
             res = 32 if preview else 128
             with torch.no_grad():
-                if preview and device=="cuda":
+                if device == "cuda":
                     meshes = app.triposr.extract_mesh(codes.to(device), resolution=res)
                 else:
                     meshes = app.triposr.extract_mesh(codes, resolution=res)
