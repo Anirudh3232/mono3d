@@ -196,7 +196,10 @@ try:
                 logger.info(f"Codes device: {codes.device}")
                 # Ensure renderer is on the same device as codes
                 if hasattr(app.triposr, 'renderer'):
-                    app.triposr.renderer = app.triposr.renderer.to(codes.device)
+                    # Get renderer device from its parameters
+                    renderer_device = next(app.triposr.renderer.parameters()).device
+                    if renderer_device != codes.device:
+                        app.triposr.renderer = app.triposr.renderer.to(codes.device)
             del concept; clear_gpu_memory()
 
             # D) Mesh extraction
@@ -204,8 +207,10 @@ try:
             with torch.no_grad():
                 with torch.cuda.amp.autocast() if device == "cuda" else nullcontext():
                     # Double check device consistency before mesh extraction
-                    if hasattr(app.triposr, 'renderer') and app.triposr.renderer.device != codes.device:
-                        app.triposr.renderer = app.triposr.renderer.to(codes.device)
+                    if hasattr(app.triposr, 'renderer'):
+                        renderer_device = next(app.triposr.renderer.parameters()).device
+                        if renderer_device != codes.device:
+                            app.triposr.renderer = app.triposr.renderer.to(codes.device)
                     meshes = app.triposr.extract_mesh(codes, resolution=res)
             del codes; clear_gpu_memory()
 
