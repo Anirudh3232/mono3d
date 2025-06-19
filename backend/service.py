@@ -173,6 +173,53 @@ try:
     
     app.triposr.eval()
     logger.info(f"TripoSR loaded on {device}"); _flush()
+
+    # ───────────────── Monkey-patch TripoSR for device compatibility ──────────────────
+    original_extract_mesh = app.triposr.extract_mesh
+
+    @torch.no_grad()
+    def patched_extract_mesh(scene_codes, resolution=128, threshold=25.0):
+        # This is a patched version that ensures all tensors are on the correct device
+        
+        # Ensure the renderer and its sub-components are on the scene_codes device
+        target_device = scene_codes.device
+        if hasattr(app.triposr, 'renderer'):
+            app.triposr.renderer.to(target_device)
+
+        # The core logic is from the original TripoSR library
+        # with the addition of .to(target_device) for the grid points
+        import mcubes
+        from .utils import get_mc_grid_vertices
+        
+        grid_vertices = get_mc_grid_vertices(resolution, target_device)
+        
+        sdf = []
+        N = 4096  # chunk size
+        head = 0
+        while head < grid_vertices.shape[0]:
+            p = grid_vertices[head : head + N]
+            sdf_p = app.triposr.renderer.query_sdf(p.unsqueeze(0), scene_codes)
+            sdf.append(sdf_p.squeeze(0).cpu())
+            head += N
+        
+        sdf = torch.cat(sdf, dim=0).numpy()
+        
+        verts, faces = mcubes.marching_cubes(sdf, threshold)
+        
+        # Further processing to get mesh (simplified for brevity)
+        # from .mesh import Mesh  # This import doesn't exist
+        # mesh = Mesh.from_vertices_faces(verts, faces)
+        
+        # Query color and return final mesh
+        # (This part is complex, we will call the original for the final steps)
+        return original_extract_mesh(scene_codes, resolution=resolution, threshold=threshold)
+
+    # Replace the original function with our patched version
+    # app.triposr.extract_mesh = patched_extract_mesh
+    # NOTE: The above line is commented out as the logic is complex.
+    # The direct library edit remains the most reliable solution if possible.
+    # If the user confirms they can't edit the library, we can explore this further.
+
     logger.info("✅ Models ready"); _flush()
 
     # ───────────── /generate endpoint ─────────────
@@ -228,7 +275,8 @@ try:
             del codes; clear_gpu_memory()
 
             # Export OBJ
-            mesh_bytes = meshes[0].export(file_type="obj")
+            import trimesh
+            mesh_bytes = trimesh.exchange.obj.export_obj(meshes[0])
             if isinstance(mesh_bytes, str): mesh_bytes = mesh_bytes.encode()
             clear_gpu_memory(); _flush()
             return jsonify({"mesh":base64.b64encode(mesh_bytes).decode()})
