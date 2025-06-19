@@ -30,12 +30,12 @@ def clear_gpu_memory():
         torch.cuda.empty_cache(); gc.collect()
 
 def gpu_mem_mb():
-    return torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0
+    return (torch.cuda.memory_allocated()/1024**2) if torch.cuda.is_available() else 0
 
 def timing(fn):
     @wraps(fn)
     def _wrap(*a, **kw):
-        t0 = time.time(); out = fn(*a, **kw)
+        t0=time.time(); out=fn(*a, **kw)
         logger.info(f"{fn.__name__} took {time.time()-t0:.2f}s")
         return out
     return _wrap
@@ -58,7 +58,7 @@ try:
         return jsonify({"status":"ok","gpu_mb":gpu_mem_mb(),
                         "models_loaded":all(hasattr(app,x) for x in ("edge_det","cnet","sd","triposr"))})
 
-    @app.route("/test",methods=["GET","POST"])
+    @app.route("/test", methods=["GET","POST"])
     def test():
         return jsonify({"message":"Server is working!","method":request.method})
 
@@ -69,24 +69,22 @@ try:
         torch.backends.cuda.matmul.allow_tf32=True
         torch.backends.cudnn.allow_tf32=True
 
-    logger.info("Loading edge detector …");   app.edge_det = CannyDetector()
-    logger.info("Loading ControlNet …");     app.cnet = ControlNetModel.from_pretrained(
-            "lllyasviel/sd-controlnet-canny", torch_dtype=torch.float16).to(device)
+    logger.info("Loading edge detector …");   app.edge_det=CannyDetector()
+    logger.info("Loading ControlNet …");     app.cnet=ControlNetModel.from_pretrained(
+        "lllyasviel/sd-controlnet-canny", torch_dtype=torch.float16).to(device)
     logger.info("Loading Stable Diffusion …")
-    app.sd = StableDiffusionControlNetPipeline.from_pretrained(
-            "runwayml/stable-diffusion-v1-5", controlnet=app.cnet,
-            torch_dtype=torch.float16).to(device)
+    app.sd=StableDiffusionControlNetPipeline.from_pretrained(
+        "runwayml/stable-diffusion-v1-5", controlnet=app.cnet,
+        torch_dtype=torch.float16).to(device)
     try:
         app.sd.enable_xformers_memory_efficient_attention(); logger.info("xformers on")
     except Exception:
-        logger.warning("xformers not available — using plain attention")
+        logger.warning("xformers not available — plain attention")
     app.sd.enable_model_cpu_offload(); app.sd.enable_attention_slicing()
 
     logger.info("Loading TripoSR …")
-    os.makedirs(os.path.join(TSR_PATH, "checkpoints"), exist_ok=True)
-    app.triposr = TSR.from_pretrained("stabilityai/TripoSR",
-                                      config_name="config.yaml",
-                                      weight_name="model.ckpt").cpu().eval()
+    os.makedirs(os.path.join(TSR_PATH,"checkpoints"),exist_ok=True)
+    app.triposr=TSR.from_pretrained("stabilityai/TripoSR",config_name="config.yaml",weight_name="model.ckpt").cpu().eval()
 
     logger.info("✅ Models ready")
 
@@ -94,36 +92,42 @@ try:
     @app.post("/generate")
     @timing
     def generate():
-        if not request.is_json:
-            return jsonify({"error":"Request must be JSON"}),400
-        data = request.json
-        if "sketch" not in data:
-            return jsonify({"error":"Missing sketch"}),400
         try:
-            png = base64.b64decode(data["sketch"].split(",",1)[1])
-            pil = Image.open(io.BytesIO(png)).convert("RGB")
-        except Exception:
-            return jsonify({"error":"Bad image"}),400
+            if not request.is_json:
+                return jsonify({"error":"Request must be JSON"}),400
+            data=request.json
+            if "sketch" not in data:
+                return jsonify({"error":"Missing sketch"}),400
+            try:
+                png=base64.b64decode(data["sketch"].split(",",1)[1])
+                pil=Image.open(io.BytesIO(png)).convert("RGB")
+            except Exception:
+                return jsonify({"error":"Bad image"}),400
 
-        prompt  = data.get("prompt","a clean 3‑D asset")
-        preview = data.get("preview",True)
+            prompt=data.get("prompt","a clean 3‑D asset"); preview=data.get("preview",True)
 
-        # A) Canny edges
-        edge = app.edge_det(pil)
-        # B) ControlNet‑guided SD → concept
-        col  = app.sd(prompt, image=edge, num_inference_steps=30, guidance_scale=7.5).images[0]
-        clear_gpu_memory()
+            # A) Canny edges
+            edge=app.edge_det(pil)
+            
+            # B) SD → concept (no_grad to save RAM)
+            with torch.no_grad():
+                col=app.sd(prompt, image=edge, num_inference_steps=30, guidance_scale=7.5).images[0]
+            del edge; clear_gpu_memory()
 
-        # C) concept → scene codes (Plain CPU call avoids device mismatch)
-        codes_cpu = app.triposr([col], device="cpu")
-        res = 64 if preview else 128
-        meshes   = app.triposr.extract_mesh(codes_cpu, resolution=res)
+            # C) concept → scene codes (CPU to avoid mismatch / OOM)
+            codes_cpu=app.triposr([col], device="cpu")
+            res=64 if preview else 128
+            meshes=app.triposr.extract_mesh(codes_cpu, resolution=res)
 
-        mesh_bytes = meshes[0].export(file_type="obj")
-        if isinstance(mesh_bytes,str):
-            mesh_bytes = mesh_bytes.encode()
-        clear_gpu_memory()
-        return jsonify({"mesh": base64.b64encode(mesh_bytes).decode()})
+            mesh_bytes=meshes[0].export(file_type="obj")
+            if isinstance(mesh_bytes,str):
+                mesh_bytes=mesh_bytes.encode()
+            clear_gpu_memory()
+            return jsonify({"mesh":base64.b64encode(mesh_bytes).decode()})
+        except Exception as e:
+            logger.error("Error in /generate", exc_info=True)
+            clear_gpu_memory()
+            return jsonify({"error":str(e)}),500
 
     if __name__=="__main__":
         app.run(host="0.0.0.0", port=5000)
