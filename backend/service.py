@@ -90,6 +90,7 @@ try:
 
     logger.info("Loading TripoSR …"); _flush()
     os.makedirs(os.path.join(TSR_PATH,"checkpoints"),exist_ok=True)
+    # Keep TripoSR on CPU by default
     app.triposr=TSR.from_pretrained("stabilityai/TripoSR",config_name="config.yaml",weight_name="model.ckpt").cpu().eval()
 
     logger.info("✅ Models ready"); _flush()
@@ -104,37 +105,46 @@ try:
             data=request.json
             if "sketch" not in data:
                 return jsonify({"error":"Missing sketch"}),400
+            # decode image
             try:
                 png=base64.b64decode(data["sketch"].split(",",1)[1])
                 pil=Image.open(io.BytesIO(png)).convert("RGB")
-            except Exception:
+            except:
                 return jsonify({"error":"Bad image"}),400
 
-            prompt=data.get("prompt","a clean 3‑D asset"); preview=data.get("preview",True)
+            prompt=data.get("prompt","a clean 3‑D asset")
+            preview=data.get("preview",True)
 
-            # A) Canny edges (very cheap)
+            # A) Edge detection
             edge = app.edge_det(pil); del pil
 
-            # B) SD → concept  (no_grad, 20 steps)
+            # B) SD generation
             with torch.no_grad():
                 concept = app.sd(prompt, image=edge, num_inference_steps=20, guidance_scale=7.5).images[0]
             del edge; clear_gpu_memory()
 
-            # C) concept → scene codes (CPU)
-            codes = app.triposr([concept], device="cpu")
+            # C) Scene codes: GPU for preview, CPU otherwise
+            if preview and device=="cuda":
+                codes = app.triposr([concept], device=device)
+            else:
+                codes = app.triposr([concept], device="cpu")
             del concept; gc.collect()
 
-            # D) Mesh extraction (32/128 res)
+            # D) Mesh extraction
             res = 32 if preview else 128
             with torch.no_grad():
-                meshes = app.triposr.extract_mesh(codes, resolution=res)
+                if preview and device=="cuda":
+                    meshes = app.triposr.extract_mesh(codes.to(device), resolution=res)
+                else:
+                    meshes = app.triposr.extract_mesh(codes, resolution=res)
             del codes; gc.collect()
 
+            # Export OBJ
             mesh_bytes = meshes[0].export(file_type="obj")
-            if isinstance(mesh_bytes, str):
-                mesh_bytes = mesh_bytes.encode()
+            if isinstance(mesh_bytes, str): mesh_bytes = mesh_bytes.encode()
             clear_gpu_memory(); _flush()
             return jsonify({"mesh":base64.b64encode(mesh_bytes).decode()})
+
         except Exception as e:
             logger.error("Error in /generate", exc_info=True); _flush()
             clear_gpu_memory()
