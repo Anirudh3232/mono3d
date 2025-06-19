@@ -32,6 +32,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # ───────────────────────────── Utility helpers ───────────────────────────────
+
 def clear_gpu_memory():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -170,7 +171,7 @@ try:
             mesh_bytes = mesh_bytes.encode()
 
         clear_gpu_memory()
-        return jsonify({"mesh": base64.b64encode(mesh_bytes).decode()}).decode()})
+        return jsonify({"mesh": base64.b64encode(mesh_bytes).decode()})
 
     if __name__ == "__main__":
         app.run(host="0.0.0.0", port=5000)
@@ -183,9 +184,11 @@ except Exception as e:
 # ───────────────────────────── Extra classes (TripoSR) ───────────────────────
 class IsosurfaceHelper(nn.Module):
     points_range: Tuple[float, float] = (0, 1)
+
     @property
     def grid_vertices(self) -> torch.FloatTensor:
         raise NotImplementedError
+
 
 class MarchingCubeHelper(IsosurfaceHelper):
     def __init__(self, resolution: int) -> None:
