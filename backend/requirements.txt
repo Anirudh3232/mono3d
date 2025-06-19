@@ -1,37 +1,36 @@
-###############################################################################
-# ───────── Core DL stack  (Torch 2.2.2  +  CUDA 11.8) ────────────────────────
+# ───────────── Core DL stack ─────────────
 torch==2.2.2+cu118
 torchvision==0.17.2+cu118
 torchaudio==2.2.2+cu118
--f https://download.pytorch.org/whl/torch_stable.html     # ← keep this line!
+-f https://download.pytorch.org/whl/torch_stable.html
 
-###############################################################################
-# ───────── Generation + 3-D pipeline ─────────────────────────────────────────
+# ───────────── Generation & 3-D ─────────────
 diffusers==0.24.0
 controlnet-aux==0.0.6
-xformers==0.0.28.post1          # built against Torch-2.2.x
+xformers==0.0.28.post1
 trimesh==4.3.0
 rembg==2.0.53
 
-###############################################################################
-# ───────── Vision / CV helpers ───────────────────────────────────────────────
+# ───────────── Pose & CV ─────────────
 mediapipe==0.10.5
 timm==0.9.16
 einops==0.7.0
 
-###############################################################################
-# ───────── API server ────────────────────────────────────────────────────────
-Flask>=2.3.0,<3.0
+# ───────────── API server ─────────────
+Flask>=2.3.0
 flask-cors>=4.0.0
 
-###############################################################################
-# ───────── Numerics & orchestration ──────────────────────────────────────────
+# ───────────── Numerics ─────────────
 numpy>=1.23,<2.0
-scipy>=1.7.0
+scipy>=1.7
 Pillow>=9.0.0
+
+# ───────────── Orchestration ─────────────
 accelerate==0.27.2
 transformers==4.41.0
 omegaconf==2.3.0
-protobuf==3.20.3
 huggingface-hub>=0.22.2,<0.28
-onnxruntime-gpu==1.17.1          # GPU build keeps TripoSR fast
+spacy<4
+peft==0.15.2
+sentence-transformers==4.1.0
+onnxruntime-gpu==1.17.1
