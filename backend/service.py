@@ -134,10 +134,16 @@ try:
 
     logger.info("Loading TripoSR …"); _flush()
     os.makedirs(os.path.join(TSR_PATH,"checkpoints"),exist_ok=True)
-    # Load TripoSR on the same device as other models
+    # Load TripoSR on CPU and force all components to CPU
     app.triposr=TSR.from_pretrained(
         "stabilityai/TripoSR",config_name="config.yaml",weight_name="model.ckpt"
-    ).to(device).eval()
+    ).cpu().eval()
+    
+    # Force all model components to CPU
+    for param in app.triposr.parameters():
+        param.data = param.data.cpu()
+    for buffer in app.triposr.buffers():
+        buffer.data = buffer.data.cpu()
 
     logger.info("✅ Models ready"); _flush()
 
@@ -173,13 +179,16 @@ try:
                 ).images[0]
             del edge; clear_gpu_memory()
 
-            # C) Scene codes - ensure concept is on the same device as TripoSR
-            codes = app.triposr([concept], device=device)
+            # C) Scene codes - use CPU for TripoSR to avoid device conflicts
+            codes = app.triposr([concept], device="cpu")
             del concept; gc.collect()
 
-            # D) Mesh extraction
+            # D) Mesh extraction - ensure codes are on CPU for mesh extraction
             res = 32 if preview else 128
             with torch.no_grad():
+                # Ensure codes are on CPU for mesh extraction
+                if codes.device != torch.device('cpu'):
+                    codes = codes.cpu()
                 meshes = app.triposr.extract_mesh(codes, resolution=res)
             del codes; gc.collect()
 
