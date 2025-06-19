@@ -143,20 +143,28 @@ try:
         clear_gpu_memory()
 
         edge_img = app.edge_det(pil_in)
-        color_img = app.sd(prompt, image=edge_img, num_inference_steps=30, guidance_scale=7.5).images[0]
+
+        # B) ControlNet‑guided Stable Diffusion → color concept
+        color_img = app.sd(
+            prompt,
+            image=edge_img,
+            num_inference_steps=30,
+            guidance_scale=7.5,
+        ).images[0]
         clear_gpu_memory()
 
-        preview = data.get("preview", True)
-        with torch.cuda.device(device):
-            scene_codes = app.triposr([color_img], device=device)
-            if preview:
-                meshes = app.triposr.extract_mesh(scene_codes.to(device), resolution=64)
-            else:
-                meshes = app.triposr.cpu().extract_mesh(scene_codes.cpu(), resolution=128)
+        # C) Color concept → TripoSR scene codes
+        scene_codes = app.triposr([color_img], device=device)
 
-        mesh_bytes = meshes[0].export(file_type="obj")
-        if isinstance(mesh_bytes, str):
-            mesh_bytes = mesh_bytes.encode()
+        # D) Extract mesh – keep all tensors on a single device
+        if preview:
+            scene_codes = scene_codes.to(device)
+            meshes = app.triposr.extract_mesh(scene_codes, resolution=64, device=device)
+        else:
+            scene_codes_cpu = scene_codes.cpu()
+            meshes = app.triposr.cpu().extract_mesh(scene_codes_cpu, resolution=128, device="cpu")
+
+        mesh_bytes = meshes[0].export(file_type="obj") mesh_bytes.encode()
 
         clear_gpu_memory()
         return jsonify({"mesh": base64.b64encode(mesh_bytes).decode()})
