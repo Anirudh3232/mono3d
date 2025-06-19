@@ -1,11 +1,38 @@
-torch>=2.0.0
-torchvision>=0.15.0
-numpy>=1.21.0
-Pillow>=9.0.0
-Flask>=2.0.0
-diffusers>=0.19.0
-controlnet-aux>=0.0.6
-mediapipe>=0.10.0
-timm>=0.6.0
+# ─────────── Core CUDA stack ────────────────────────────────────────
+torch==2.2.2+cu118
+torchvision==0.17.2+cu118
+torchaudio==2.2.2+cu118
+-f https://download.pytorch.org/whl/torch_stable.html   # ← keep this line
+
+# ─────────── Diffusion / ControlNet / LoRA ──────────────────────────
+diffusers==0.30.2
+controlnet-aux==0.0.6
+accelerate==0.30.0
+peft==0.15.2
+transformers==4.41.0
+huggingface-hub==0.33.0
+
+# ─────────── xformers (optional) ────────────────────────────────────
+# Comment IN if you want the VRAM savings, otherwise leave out
+# xformers==0.0.28.post1          # built for Torch-2.2.x + CUDA-11.8
+
+# ─────────── 3-D / vision helpers ───────────────────────────────────
+timm==0.9.16
+mediapipe==0.10.5
+einops==0.7.0
+trimesh==4.3.0
+rembg==2.0.53
+
+# ─────────── Numerics & utils ───────────────────────────────────────
+numpy>=1.23,<2.0
 scipy>=1.7.0
-trimesh>=3.9.0 
+Pillow>=9.0.0
+omegaconf==2.3.0
+protobuf==3.20.3
+fsspec==2025.5.1
+gcsfs==2025.5.1
+onnxruntime-gpu==1.17.1
+
+# ─────────── API server (required for service.py) ───────────────────
+Flask>=2.3.0
+flask-cors>=4.0.0
