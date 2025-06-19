@@ -14,6 +14,10 @@ import logging
 import time
 from functools import wraps
 
+import transformers as _tf, types
+for _name in ("Cache", "DynamicCache", "EncoderDecoderCache"):
+    if not hasattr(_tf, _name):
+        setattr(_tf, _name, types.SimpleNamespace)
 
 import importlib
 _acc_mem = importlib.import_module("accelerate.utils.memory")
