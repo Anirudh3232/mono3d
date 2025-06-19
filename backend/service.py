@@ -136,26 +136,43 @@ try:
 
     logger.info("Loading TripoSR …"); _flush()
     os.makedirs(os.path.join(TSR_PATH,"checkpoints"),exist_ok=True)
+    
+    def ensure_module_on_device(module, target_device):
+        """Helper function to ensure all tensors in a module are on the right device"""
+        module.to(target_device)
+        for attr_name in dir(module):
+            try:
+                attr = getattr(module, attr_name)
+                if isinstance(attr, torch.Tensor):
+                    setattr(module, attr_name, attr.to(target_device))
+                elif hasattr(attr, 'to'):
+                    attr.to(target_device)
+            except Exception:
+                continue
+        return module
+
     # Load TripoSR on GPU with mixed precision
     app.triposr = TSR.from_pretrained(
         "stabilityai/TripoSR",
         config_name="config.yaml",
         weight_name="model.ckpt"
-    ).to(device)
+    )
     
-    # Ensure renderer and all submodules are on the correct device
+    # Ensure everything is on the correct device
+    app.triposr = ensure_module_on_device(app.triposr, device)
     if hasattr(app.triposr, 'renderer'):
-        app.triposr.renderer = app.triposr.renderer.to(device)
+        app.triposr.renderer = ensure_module_on_device(app.triposr.renderer, device)
         if hasattr(app.triposr.renderer, 'triplane'):
             app.triposr.renderer.triplane = app.triposr.renderer.triplane.to(device)
     
     if device == "cuda":
-        app.triposr = app.triposr.half()  # Use half precision on GPU
-        # Also convert renderer to half precision if it exists
+        # Convert to half precision if using CUDA
+        app.triposr = app.triposr.half()
         if hasattr(app.triposr, 'renderer'):
             app.triposr.renderer = app.triposr.renderer.half()
+    
     app.triposr.eval()
-
+    logger.info(f"TripoSR loaded on {device}"); _flush()
     logger.info("✅ Models ready"); _flush()
 
     # ───────────── /generate endpoint ─────────────
@@ -194,20 +211,19 @@ try:
             with torch.cuda.amp.autocast() if device == "cuda" else nullcontext():
                 codes = app.triposr([concept], device=device)
                 logger.info(f"Codes device: {codes.device}")
-                # Ensure renderer is on the same device as codes
-                if hasattr(app.triposr, 'renderer') and hasattr(app.triposr.renderer, 'triplane'):
-                    if app.triposr.renderer.triplane.device != codes.device:
-                        app.triposr.renderer.triplane = app.triposr.renderer.triplane.to(codes.device)
+                
+                # Re-ensure renderer is on correct device
+                if hasattr(app.triposr, 'renderer'):
+                    app.triposr.renderer = ensure_module_on_device(app.triposr.renderer, codes.device)
             del concept; clear_gpu_memory()
 
             # D) Mesh extraction
             res = 32 if preview else 128
             with torch.no_grad():
                 with torch.cuda.amp.autocast() if device == "cuda" else nullcontext():
-                    # Double check device consistency before mesh extraction
-                    if hasattr(app.triposr, 'renderer') and hasattr(app.triposr.renderer, 'triplane'):
-                        if app.triposr.renderer.triplane.device != codes.device:
-                            app.triposr.renderer.triplane = app.triposr.renderer.triplane.to(codes.device)
+                    # Final device check before mesh extraction
+                    if hasattr(app.triposr, 'renderer'):
+                        app.triposr.renderer = ensure_module_on_device(app.triposr.renderer, codes.device)
                     meshes = app.triposr.extract_mesh(codes, resolution=res)
             del codes; clear_gpu_memory()
 
