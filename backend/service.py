@@ -254,6 +254,15 @@ try:
                 ).images[0]
             del edge; clear_gpu_memory()
 
+            # For debugging, encode the intermediate concept image
+            concept_b64 = ""
+            try:
+                buf = io.BytesIO()
+                concept.save(buf, format="PNG")
+                concept_b64 = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+            except Exception as e:
+                logger.warning(f"Could not encode concept image: {e}")
+
             # C) Scene codes - use same device as model
             with torch.cuda.amp.autocast() if device == "cuda" else nullcontext():
                 codes = app.triposr([concept], device=device)
@@ -279,7 +288,10 @@ try:
             mesh_bytes = trimesh.exchange.obj.export_obj(meshes[0])
             if isinstance(mesh_bytes, str): mesh_bytes = mesh_bytes.encode()
             clear_gpu_memory(); _flush()
-            return jsonify({"mesh":base64.b64encode(mesh_bytes).decode()})
+            return jsonify({
+                "mesh": base64.b64encode(mesh_bytes).decode(),
+                "concept_image": concept_b64,
+            })
 
         except Exception as e:
             logger.error("Error in /generate", exc_info=True); _flush()
