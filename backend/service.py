@@ -9,18 +9,24 @@ from PIL import Image
 from functools import wraps
 
 # ─────────────────────────── Hot‑patch dependencies ────────────────────────────
-# Ensure transforms from Hugging Face are available
+# 1) Ensure top-level transformers exports
 import transformers
 for _n in ("Cache", "DynamicCache", "EncoderDecoderCache"):
     if not hasattr(transformers, _n):
         setattr(transformers, _n, types.SimpleNamespace)
-
-# Fix diffusers/huggingface_hub mismatch
+# 2) Also patch transformers.cache_utils so that `from transformers.cache_utils import EncoderDecoderCache` works
+try:
+    import transformers.cache_utils as _tcu
+    for _n in ("Cache", "DynamicCache", "EncoderDecoderCache"):
+        if not hasattr(_tcu, _n):
+            setattr(_tcu, _n, types.SimpleNamespace)
+except ImportError:
+    pass
+# 3) Fix diffusers/huggingface_hub mismatch
 import huggingface_hub as _hf_hub
 if not hasattr(_hf_hub, "cached_download"):
     _hf_hub.cached_download = _hf_hub.hf_hub_download
-
-# Patch accelerate for peft compatibility
+# 4) Patch accelerate for peft compatibility
 _acc_mem = importlib.import_module("accelerate.utils.memory")
 if not hasattr(_acc_mem, "clear_device_cache"):
     _acc_mem.clear_device_cache = lambda *a, **k: None
