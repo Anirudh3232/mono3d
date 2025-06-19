@@ -7,7 +7,8 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
 from functools import wraps
-from torch.cuda.amp import autocast, nullcontext
+from torch.cuda.amp import autocast
+from contextlib import nullcontext
 
 # ─────────────────────────── Hot‑patch dependencies ────────────────────────────
 # 1) Create mock cache classes
