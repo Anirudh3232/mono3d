@@ -8,17 +8,19 @@ from flask_cors import CORS
 from PIL import Image
 from functools import wraps
 
-# ─────────────────────────── Hot‑patch deps ────────────────────────────
-import transformers as _tf
+# ─────────────────────────── Hot‑patch dependencies ────────────────────────────
+# Ensure transforms from Hugging Face are available
+import transformers
 for _n in ("Cache", "DynamicCache", "EncoderDecoderCache"):
-    if not hasattr(_tf, _n):
-        setattr(_tf, _n, types.SimpleNamespace)
+    if not hasattr(transformers, _n):
+        setattr(transformers, _n, types.SimpleNamespace)
 
 # Fix diffusers/huggingface_hub mismatch
 import huggingface_hub as _hf_hub
 if not hasattr(_hf_hub, "cached_download"):
     _hf_hub.cached_download = _hf_hub.hf_hub_download
 
+# Patch accelerate for peft compatibility
 _acc_mem = importlib.import_module("accelerate.utils.memory")
 if not hasattr(_acc_mem, "clear_device_cache"):
     _acc_mem.clear_device_cache = lambda *a, **k: None
@@ -30,8 +32,7 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger(__name__)
 
 def _flush():
-    for h in logger.handlers:
-        h.flush()
+    for h in logger.handlers: h.flush()
 atexit.register(_flush)
 
 # ─────────────────────────── Helpers ───────────────────────────────────
@@ -61,7 +62,7 @@ try:
     TSR_PATH    = os.path.join(PROJECT_DIR, "TripoSR-main"); sys.path.append(TSR_PATH)
     from tsr.system import TSR
 
-    # ───────────── Flask ─────────────
+    # ───────────── Flask app setup ─────────────
     app = Flask(__name__); CORS(app)
 
     @app.get("/health")
@@ -88,19 +89,21 @@ try:
         "runwayml/stable-diffusion-v1-5", controlnet=app.cnet,
         torch_dtype=torch.float16).to(device)
     try:
-        app.sd.enable_xformers_memory_efficient_attention(); logger.info("xformers on")
+        app.sd.enable_xformers_memory_efficient_attention(); logger.info("xformers enabled")
     except Exception:
-        logger.warning("xformers not available — plain attention")
+        logger.warning("xformers not available — using plain attention")
     app.sd.enable_model_cpu_offload(); app.sd.enable_attention_slicing()
 
     logger.info("Loading TripoSR …"); _flush()
     os.makedirs(os.path.join(TSR_PATH,"checkpoints"),exist_ok=True)
-    # Keep TripoSR on CPU by default
-    app.triposr=TSR.from_pretrained("stabilityai/TripoSR",config_name="config.yaml",weight_name="model.ckpt").cpu().eval()
+    # Load TripoSR on CPU by default
+    app.triposr=TSR.from_pretrained(
+        "stabilityai/TripoSR",config_name="config.yaml",weight_name="model.ckpt"
+    ).cpu().eval()
 
     logger.info("✅ Models ready"); _flush()
 
-    # ───────────── /generate ─────────────
+    # ───────────── /generate endpoint ─────────────
     @app.post("/generate")
     @timing
     def generate():
@@ -110,25 +113,29 @@ try:
             data=request.json
             if "sketch" not in data:
                 return jsonify({"error":"Missing sketch"}),400
-            # decode image
+
+            # Decode input image
             try:
                 png=base64.b64decode(data["sketch"].split(",",1)[1])
                 pil=Image.open(io.BytesIO(png)).convert("RGB")
             except:
-                return jsonify({"error":"Bad image"}),400
+                return jsonify({"error":"Bad image data"}),400
 
-            prompt=data.get("prompt","a clean 3‑D asset")
-            preview=data.get("preview",True)
+            prompt     = data.get("prompt","a clean 3‑D asset")
+            preview    = data.get("preview",True)
 
             # A) Edge detection
             edge = app.edge_det(pil); del pil
 
-            # B) SD generation
+            # B) Stable Diffusion
             with torch.no_grad():
-                concept = app.sd(prompt, image=edge, num_inference_steps=20, guidance_scale=7.5).images[0]
+                concept = app.sd(
+                    prompt, image=edge,
+                    num_inference_steps=20, guidance_scale=7.5
+                ).images[0]
             del edge; clear_gpu_memory()
 
-            # C) Scene codes: GPU for preview, CPU otherwise
+            # C) Scene codes
             if preview and device=="cuda":
                 codes = app.triposr([concept], device=device)
             else:
@@ -162,7 +169,7 @@ except Exception:
     logger.error("❌ Error during initialization", exc_info=True); _flush()
     raise
 
-# ───────────── TripoSR helpers (unchanged) ─────────────
+# ───────────── TripoSR helpers ─────────────
 class IsosurfaceHelper(nn.Module):
     points_range: Tuple[float,float]=(0,1)
     @property
