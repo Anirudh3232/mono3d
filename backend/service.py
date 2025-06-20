@@ -95,8 +95,9 @@ def timing(fn):
 print("Starting service initialization …")
 try:
     logger.info("Importing diffusers …"); _flush()
-    from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
+    from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, EulerAncestralDiscreteScheduler
     from controlnet_aux import CannyDetector
+    from trimesh.smoothing import filter_laplacian
 
     PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
     TSR_PATH    = os.path.join(PROJECT_DIR, "TripoSR-main"); sys.path.append(TSR_PATH)
@@ -128,6 +129,9 @@ try:
     app.sd=StableDiffusionControlNetPipeline.from_pretrained(
         "runwayml/stable-diffusion-v1-5", controlnet=app.cnet,
         torch_dtype=torch.float16).to(device)
+    # Replace scheduler for better detail preservation, per research guide
+    logger.info("Replacing scheduler with EulerAncestralDiscreteScheduler for better detail preservation.")
+    app.sd.scheduler = EulerAncestralDiscreteScheduler.from_config(app.sd.scheduler.config)
     try:
         app.sd.enable_xformers_memory_efficient_attention(); logger.info("xformers enabled")
     except Exception:
@@ -243,6 +247,13 @@ try:
             prompt     = data.get("prompt","a clean 3‑D asset")
             preview    = data.get("preview",True)
 
+            # Allow overriding generation parameters for optimization
+            num_inference_steps = int(data.get("num_inference_steps", 50))
+            guidance_scale = float(data.get("guidance_scale", 9.0))
+            smoothing_iterations = int(data.get("smoothing_iterations", 10))
+            smoothing_lambda = float(data.get("smoothing_lambda", 0.5))
+            mesh_threshold = float(data.get("mesh_threshold", 25.0))
+
             # A) Edge detection
             edge = app.edge_det(pil); del pil
 
@@ -250,7 +261,7 @@ try:
             with torch.no_grad():
                 concept = app.sd(
                     prompt, image=edge,
-                    num_inference_steps=20, guidance_scale=7.5
+                    num_inference_steps=num_inference_steps, guidance_scale=guidance_scale
                 ).images[0]
             del edge; clear_gpu_memory()
 
@@ -272,12 +283,17 @@ try:
                     # Final device check before mesh extraction
                     if hasattr(app.triposr, 'renderer'):
                         app.triposr.renderer = ensure_module_on_device(app.triposr.renderer, codes.device)
-                    meshes = app.triposr.extract_mesh(codes, resolution=res)
+                    meshes = app.triposr.extract_mesh(codes, resolution=res, threshold=mesh_threshold)
             del codes; clear_gpu_memory()
 
             # Export OBJ and texture
             mesh = meshes[0]
             
+            # Post-process the mesh to reduce artifacts and improve quality
+            logger.info(f"Applying Laplacian smoothing to the mesh (lamb={smoothing_lambda}, iterations={smoothing_iterations})...")
+            if smoothing_iterations > 0:
+                filter_laplacian(mesh, lamb=smoothing_lambda, iterations=smoothing_iterations)
+
             # Use xatlas to generate UVs
             import xatlas
             import trimesh
@@ -305,15 +321,20 @@ try:
             # Export to a zip file in memory
             import zipfile
             zip_buffer = io.BytesIO()
+            
+            # Manually export each component for robustness
+            obj_data = trimesh.exchange.obj.export_obj(uv_mesh, mtl_name="texture.mtl")
+            mtl_data = trimesh.exchange.mtl.export_mtl(uv_mesh.visual.material)
+            
+            # Save the texture image to a buffer
+            texture_buffer = io.BytesIO()
+            uv_mesh.visual.material.image.save(texture_buffer, format='PNG')
+            texture_data = texture_buffer.getvalue()
+
             with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-                # Export OBJ and MTL
-                obj_data, mtl_data = trimesh.exchange.obj.export_obj(uv_mesh, include_mtl=True, return_texture=True)
                 zf.writestr("model.obj", obj_data)
-                
-                # The mtl_data is a dictionary where keys are mtl file names
-                # and values are the file content
-                for mtl_name, mtl_content in mtl_data.items():
-                    zf.writestr(mtl_name, mtl_content)
+                zf.writestr("texture.mtl", mtl_data)
+                zf.writestr("texture.png", texture_data)
 
             zip_buffer.seek(0)
             
