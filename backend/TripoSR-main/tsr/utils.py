@@ -461,11 +461,21 @@ def save_video(
     fps: int = 30,
 ):
     # use imageio to save video
-    frames = [np.array(frame) for frame in frames]
-    writer = imageio.get_writer(output_path, fps=fps)
-    for frame in frames:
-        writer.append_data(frame)
-    writer.close()
+    imageio.mimsave(output_path, frames, fps=fps)
+
+
+def get_mc_grid_vertices(resolution: int, device: torch.device) -> torch.FloatTensor:
+    """Generate grid vertices for marching cubes at given resolution and device."""
+    x, y, z = (
+        torch.linspace(0, 1, resolution, device=device),
+        torch.linspace(0, 1, resolution, device=device),
+        torch.linspace(0, 1, resolution, device=device),
+    )
+    x, y, z = torch.meshgrid(x, y, z, indexing="ij")
+    verts = torch.cat(
+        [x.reshape(-1, 1), y.reshape(-1, 1), z.reshape(-1, 1)], dim=-1
+    ).reshape(-1, 3)
+    return verts
 
 
 def to_gradio_3d_orientation(mesh):
