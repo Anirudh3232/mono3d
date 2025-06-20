@@ -49,7 +49,7 @@ class MarchingCubeHelper(IsosurfaceHelper):
             import mcubes
             vertices, triangles = mcubes.marching_cubes(level_np, 0.0)
             v_pos = torch.from_numpy(vertices).float()
-            t_pos_idx = torch.from_numpy(triangles).long()
+            t_pos_idx = torch.from_numpy(triangles.astype(np.int64)).long()
         except ImportError:
             # Fallback to scipy if mcubes is not available
             from scipy.spatial import Delaunay
