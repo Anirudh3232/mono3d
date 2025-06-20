@@ -254,15 +254,6 @@ try:
                 ).images[0]
             del edge; clear_gpu_memory()
 
-            # For debugging, encode the intermediate concept image
-            concept_b64 = ""
-            try:
-                buf = io.BytesIO()
-                concept.save(buf, format="PNG")
-                concept_b64 = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
-            except Exception as e:
-                logger.warning(f"Could not encode concept image: {e}")
-
             # C) Scene codes - use same device as model
             with torch.cuda.amp.autocast() if device == "cuda" else nullcontext():
                 codes = app.triposr([concept], device=device)
@@ -271,7 +262,8 @@ try:
                 # Re-ensure renderer is on correct device
                 if hasattr(app.triposr, 'renderer'):
                     app.triposr.renderer = ensure_module_on_device(app.triposr.renderer, codes.device)
-            del concept; clear_gpu_memory()
+            # We no longer delete `concept` here, but we can still clear some memory
+            clear_gpu_memory()
 
             # D) Mesh extraction
             res = 32 if preview else 128
@@ -302,6 +294,7 @@ try:
             
             # Create a texture from the concept image
             texture = concept.resize((1024, 1024))
+            del concept # Now we can safely delete the concept image
             
             # Create material
             material = trimesh.visual.material.SimpleMaterial(image=texture)
