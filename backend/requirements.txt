@@ -1,35 +1,37 @@
-# ───────────── Core DL stack ─────────────
--f https://download.pytorch.org/whl/torch_stable.html
+# ───────────────── PyTorch & CUDA ──────────────────
+# Using torch 2.2.2 with CUDA 11.8 as a stable base
 torch==2.2.2+cu118
 torchvision==0.17.2+cu118
 torchaudio==2.2.2+cu118
+-f https://download.pytorch.org/whl/torch_stable.html
 
-# ───────────── Generation & 3-D ─────────────
-diffusers==0.24.0
-controlnet-aux==0.0.6
-trimesh==4.3.0
-rembg==2.0.53
-
-# ───────────── Pose & CV ─────────────
-mediapipe==0.10.5
-timm==0.9.16
-einops==0.7.0
-
-# ───────────── API server ─────────────
-Flask>=2.3.0
-flask-cors>=4.0.0
-
-# ───────────── Numerics ─────────────
-numpy>=1.23,<2.0
-scipy>=1.7
-Pillow>=9.0.0
-
-# ───────────── Orchestration ─────────────
+# ────────── Diffusers & Transformers Stack ───────────
+# Pinned to stable, compatible versions
+diffusers==0.27.2
+transformers==4.38.2
 accelerate==0.27.2
-transformers==4.41.0
+peft==0.9.0
+huggingface-hub==0.20.3
+controlnet-aux==0.0.7
+
+# ────────── TripoSR & 3D Vision Stack ────────────
+# Key libraries for 3D generation and processing
+einops==0.7.0
 omegaconf==2.3.0
-huggingface-hub>=0.22.2,<0.28
-spacy<4
-peft==0.15.2
-sentence-transformers==4.1.0
-onnxruntime-gpu==1.17.1
+trimesh==4.4.0
+scipy>=1.10.0
+# Our custom additions for mesh generation and texturing
+PyMCubes==0.1.4
+xatlas==0.1.3
+
+# ─────────────── Image & Numerics ───────────────
+numpy<1.27,>=1.23
+Pillow>=9.5.0
+rembg==2.0.53
+timm==0.9.16
+imageio==2.34.0
+imageio-ffmpeg
+
+# ─────────────── API Server ───────────────
+Flask>=3.0.0
+flask-cors>=4.0.0
