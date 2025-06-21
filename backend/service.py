@@ -131,7 +131,7 @@ try:
     app.sd=StableDiffusionControlNetPipeline.from_pretrained(
         "runwayml/stable-diffusion-v1-5", controlnet=app.cnet,
         torch_dtype=torch.float16).to(device)
-    # Replace scheduler for better detail preservation, per research guide
+    
     logger.info("Replacing scheduler with EulerAncestralDiscreteScheduler for better detail preservation.")
     app.sd.scheduler = EulerAncestralDiscreteScheduler.from_config(app.sd.scheduler.config)
     try:
@@ -139,6 +139,9 @@ try:
     except Exception:
         logger.warning("xformers not available — using plain attention")
     app.sd.enable_model_cpu_offload(); app.sd.enable_attention_slicing()
+    
+    logger.info("Loading LPIPS model for scoring..."); _flush()
+    app.lpips_alex = lpips.LPIPS(net='alex').to(device)
 
     logger.info("Loading TripoSR …"); _flush()
     os.makedirs(os.path.join(TSR_PATH,"checkpoints"),exist_ok=True)
