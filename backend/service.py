@@ -9,6 +9,8 @@ from PIL import Image
 from functools import wraps
 from torch.cuda.amp import autocast
 from contextlib import nullcontext
+import lpips
+from trimesh.scene import Scene
 
 # ─────────────────────────── Hot‑patch dependencies ────────────────────────────
 # 1) Create mock cache classes
