@@ -324,7 +324,18 @@ try:
             
             # Manually export each component for robustness
             obj_data = trimesh.exchange.obj.export_obj(uv_mesh, mtl_name="texture.mtl")
-            mtl_data = trimesh.exchange.mtl.export_mtl(uv_mesh.visual.material)
+            
+            # Manually create the MTL file content as a string
+            mtl_data = f"""
+newmtl material_0
+Ka 1.000000 1.000000 1.000000
+Kd 1.000000 1.000000 1.000000
+Ks 0.000000 0.000000 0.000000
+Tr 1.000000
+illum 2
+Ns 0.000000
+map_Kd texture.png
+"""
             
             # Save the texture image to a buffer
             texture_buffer = io.BytesIO()
