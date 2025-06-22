@@ -97,7 +97,7 @@ try:
     logger.info("Importing diffusers …"); _flush()
     from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, EulerAncestralDiscreteScheduler
     from controlnet_aux import CannyDetector
-    from trimesh.smoothing import filter_laplacian
+    from trimesh.smoothing import filter_taubin
 
     PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
     TSR_PATH    = os.path.join(PROJECT_DIR, "TripoSR-main"); sys.path.append(TSR_PATH)
@@ -260,8 +260,7 @@ try:
             # Allow overriding generation parameters for optimization
             num_inference_steps = int(data.get("num_inference_steps", 50))
             guidance_scale = float(data.get("guidance_scale", 9.0))
-            smoothing_iterations = int(data.get("smoothing_iterations", 0))
-            smoothing_lambda = float(data.get("smoothing_lambda", 0.2))
+            smoothing_iterations = int(data.get("smoothing_iterations", 10))
             mesh_threshold = float(data.get("mesh_threshold", 25.0))
 
             # A) Edge detection
@@ -300,9 +299,9 @@ try:
             mesh = meshes[0]
             
             # Post-process the mesh to reduce artifacts and improve quality
-            logger.info(f"Applying Laplacian smoothing to the mesh (lamb={smoothing_lambda}, iterations={smoothing_iterations})...")
+            logger.info(f"Applying Taubin smoothing to the mesh (iterations={smoothing_iterations})...")
             if smoothing_iterations > 0:
-                filter_laplacian(mesh, lamb=smoothing_lambda, iterations=smoothing_iterations)
+                filter_taubin(mesh, iterations=smoothing_iterations)
 
             # Use xatlas to generate UVs
             import xatlas
