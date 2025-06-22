@@ -260,7 +260,7 @@ try:
             # Allow overriding generation parameters for optimization
             num_inference_steps = int(data.get("num_inference_steps", 50))
             guidance_scale = float(data.get("guidance_scale", 9.0))
-            smoothing_iterations = int(data.get("smoothing_iterations", 3))
+            smoothing_iterations = int(data.get("smoothing_iterations", 0))
             smoothing_lambda = float(data.get("smoothing_lambda", 0.2))
             mesh_threshold = float(data.get("mesh_threshold", 25.0))
 
