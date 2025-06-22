@@ -214,7 +214,7 @@ try:
             # Allow overriding generation parameters for optimization
             num_inference_steps = int(data.get("num_inference_steps", 63))
             guidance_scale = float(data.get("guidance_scale", 9.96))
-            smoothing_iterations = int(data.get("smoothing_iterations", 3))
+            smoothing_iterations = int(data.get("smoothing_iterations", 1))
             mesh_threshold = float(data.get("mesh_threshold", 25.0))
 
             # A) Edge detection
@@ -255,11 +255,23 @@ try:
             # Post-process the mesh to reduce artifacts and improve quality
             logger.info(f"Applying Laplacian smoothing to the mesh (iterations={smoothing_iterations})...")
             if smoothing_iterations > 0:
-                filter_laplacian(mesh, iterations=smoothing_iterations)
+                try:
+                    # Check if mesh is valid before smoothing
+                    if mesh.vertices.shape[0] > 0 and mesh.faces.shape[0] > 0:
+                        filter_laplacian(mesh, iterations=smoothing_iterations)
+                        logger.info("Laplacian smoothing completed successfully")
+                    else:
+                        logger.warning("Mesh is empty, skipping smoothing")
+                except Exception as e:
+                    logger.warning(f"Laplacian smoothing failed: {e}, continuing without smoothing")
             
             # Process the mesh to fix potential issues before UV unwrapping
             logger.info("Processing mesh to fix potential issues...")
-            mesh.process()
+            try:
+                mesh.process()
+                logger.info("Mesh processing completed")
+            except Exception as e:
+                logger.warning(f"Mesh processing failed: {e}, continuing with original mesh")
 
             # Use xatlas to generate UVs
             import xatlas
