@@ -115,6 +115,15 @@ try:
     def test():
         return jsonify({"message":"Server is working!","method":request.method})
 
+    @app.get("/latest_concept_image")
+    def get_latest_concept_image():
+        if app.last_concept_image:
+            buf = io.BytesIO()
+            app.last_concept_image.save(buf, format="PNG")
+            buf.seek(0)
+            return send_file(buf, mimetype='image/png')
+        return jsonify({"error": "No concept image has been generated yet."}), 404
+
     # ───────────── Load models ─────────────
     device = "cuda" if torch.cuda.is_available() else "cpu"; logger.info(f"Using {device}")
     if device=="cuda":
@@ -140,6 +149,7 @@ try:
 
     logger.info("Loading TripoSR …"); _flush()
     os.makedirs(os.path.join(TSR_PATH,"checkpoints"),exist_ok=True)
+    app.last_concept_image = None # To store the last generated concept
     
     def ensure_module_on_device(module, target_device):
         """Helper function to ensure all tensors in a module are on the right device"""
@@ -264,6 +274,7 @@ try:
                     num_inference_steps=num_inference_steps, guidance_scale=guidance_scale
                 ).images[0]
             del edge; clear_gpu_memory()
+            app.last_concept_image = concept.copy()
 
             # C) Scene codes - use same device as model
             with torch.cuda.amp.autocast() if device == "cuda" else nullcontext():
@@ -317,6 +328,11 @@ try:
             
             # Assign material to the mesh
             uv_mesh.visual.material = material
+            
+            # Encode the concept image for the response
+            concept_buffer = io.BytesIO()
+            concept.save(concept_buffer, format="PNG")
+            concept_b64 = base64.b64encode(concept_buffer.getvalue()).decode()
             
             # Export to a zip file in memory
             import zipfile
