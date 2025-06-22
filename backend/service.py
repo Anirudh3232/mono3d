@@ -274,7 +274,6 @@ try:
                     num_inference_steps=num_inference_steps, guidance_scale=guidance_scale
                 ).images[0]
             del edge; clear_gpu_memory()
-            app.last_concept_image = concept.copy()
 
             # C) Scene codes - use same device as model
             with torch.cuda.amp.autocast() if device == "cuda" else nullcontext():
@@ -321,14 +320,14 @@ try:
             
             # Create a texture from the concept image
             texture = concept.resize((1024, 1024))
-            del concept # Now we can safely delete the concept image
             
             # Create material
             material = trimesh.visual.material.SimpleMaterial(image=texture)
             
             # Assign material to the mesh
             uv_mesh.visual.material = material
-            
+            app.last_concept_image = concept.copy()
+
             # Encode the concept image for the response
             concept_buffer = io.BytesIO()
             concept.save(concept_buffer, format="PNG")
