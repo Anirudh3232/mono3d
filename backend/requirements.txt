@@ -32,12 +32,6 @@ timm==0.9.16
 imageio==2.34.0
 imageio-ffmpeg
 
-# ─────────── 3D Rendering & Scoring ───────────
-# For offscreen rendering of the mesh for scoring
-pyglet==2.0.15
-# For calculating perceptual similarity score
-lpips==0.1.4
-
 # ─────────────── API Server ───────────────
 Flask>=3.0.0
 flask-cors>=4.0.0
