@@ -260,8 +260,8 @@ try:
             # Allow overriding generation parameters for optimization
             num_inference_steps = int(data.get("num_inference_steps", 50))
             guidance_scale = float(data.get("guidance_scale", 9.0))
-            smoothing_iterations = int(data.get("smoothing_iterations", 3))
-            mesh_threshold = float(data.get("mesh_threshold", 30.0))
+            smoothing_iterations = int(data.get("smoothing_iterations", 0))
+            mesh_threshold = float(data.get("mesh_threshold", 25.0))
 
             # A) Edge detection
             edge = app.edge_det(pil); del pil
