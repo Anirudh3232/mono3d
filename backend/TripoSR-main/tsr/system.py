@@ -188,6 +188,7 @@ class TSR(BaseModule):
                 self.isosurface_helper.points_range,
                 (-self.renderer.cfg.radius, self.renderer.cfg.radius),
             )
+            v_pos = v_pos.to(scene_code.device)
             with torch.no_grad():
                 color = self.renderer.query_triplane(
                     self.decoder,
