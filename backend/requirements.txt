@@ -27,11 +27,11 @@ xatlas==0.0.10
 # ─────────────── Image & Numerics ───────────────
 numpy<1.27,>=1.23
 Pillow>=9.5.0
-rembg==2.0.53
 timm==0.9.16
 imageio==2.34.0
 imageio-ffmpeg
 
 # ─────────────── API Server ───────────────
-Flask>=3.0.0
-flask-cors>=4.0.0
+# Pinned for stability
+Flask==3.0.3
+Flask-Cors==4.0.1
