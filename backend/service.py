@@ -9,8 +9,6 @@ from PIL import Image
 from functools import wraps
 from torch.cuda.amp import autocast
 from contextlib import nullcontext
-import lpips
-from trimesh.scene import Scene
 
 # ─────────────────────────── Hot‑patch dependencies ────────────────────────────
 # 1) Create mock cache classes
@@ -140,9 +138,6 @@ try:
         logger.warning("xformers not available — using plain attention")
     app.sd.enable_model_cpu_offload(); app.sd.enable_attention_slicing()
 
-    logger.info("Loading LPIPS model for scoring..."); _flush()
-    app.lpips_alex = lpips.LPIPS(net='alex').to(device)
-
     logger.info("Loading TripoSR …"); _flush()
     os.makedirs(os.path.join(TSR_PATH,"checkpoints"),exist_ok=True)
     
@@ -251,7 +246,6 @@ try:
 
             prompt     = data.get("prompt","a clean 3‑D asset")
             preview    = data.get("preview",True)
-            score_mesh = data.get("score_mesh", False)
 
             # Allow overriding generation parameters for optimization
             num_inference_steps = int(data.get("num_inference_steps", 50))
@@ -324,31 +318,6 @@ try:
             # Assign material to the mesh
             uv_mesh.visual.material = material
             
-            score = -1.0
-            if score_mesh:
-                logger.info("Scoring mesh quality...")
-                try:
-                    # Render a front-facing view of the generated mesh
-                    scene = Scene(uv_mesh)
-                    # Use a resolution that matches the concept image (512x512)
-                    rendered_data = scene.save_image(resolution=(512, 512), visible=False)
-                    rendered_img = Image.open(io.BytesIO(rendered_data)).convert("RGB")
-
-                    # Prepare images for LPIPS
-                    # Images need to be normalized to [-1, 1]
-                    def to_lpips_tensor(pil_img):
-                        return torch.from_numpy(np.array(pil_img)).permute(2, 0, 1).unsqueeze(0).to(device) / 127.5 - 1.0
-
-                    concept_tensor = to_lpips_tensor(concept)
-                    rendered_tensor = to_lpips_tensor(rendered_img)
-                    
-                    with torch.no_grad():
-                        score = app.lpips_alex(concept_tensor, rendered_tensor).item()
-                    logger.info(f"Calculated LPIPS score: {score:.4f}")
-
-                except Exception as e:
-                    logger.error("Failed to score mesh", exc_info=True)
-            
             # Export to a zip file in memory
             import zipfile
             zip_buffer = io.BytesIO()
@@ -381,20 +350,12 @@ map_Kd texture.png
             zip_buffer.seek(0)
             
             clear_gpu_memory(); _flush()
-
-            # Return different responses based on whether scoring was requested
-            if score_mesh:
-                return jsonify({
-                    "model_zip_b64": base64.b64encode(zip_buffer.getvalue()).decode(),
-                    "score": score
-                })
-            else:
-                return send_file(
-                    zip_buffer,
-                    as_attachment=True,
-                    download_name='3d_model.zip',
-                    mimetype='application/zip'
-                )
+            return send_file(
+                zip_buffer,
+                as_attachment=True,
+                download_name='3d_model.zip',
+                mimetype='application/zip'
+            )
 
         except Exception as e:
             logger.error("Error in /generate", exc_info=True); _flush()
