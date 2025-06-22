@@ -97,7 +97,7 @@ try:
     logger.info("Importing diffusers …"); _flush()
     from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, EulerAncestralDiscreteScheduler
     from controlnet_aux import CannyDetector
-    from trimesh.smoothing import filter_taubin
+    from trimesh.smoothing import filter_laplacian
 
     PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
     TSR_PATH    = os.path.join(PROJECT_DIR, "TripoSR-main"); sys.path.append(TSR_PATH)
@@ -253,9 +253,9 @@ try:
             mesh = meshes[0]
             
             # Post-process the mesh to reduce artifacts and improve quality
-            logger.info(f"Applying Taubin smoothing to the mesh (iterations={smoothing_iterations})...")
+            logger.info(f"Applying Laplacian smoothing to the mesh (iterations={smoothing_iterations})...")
             if smoothing_iterations > 0:
-                filter_taubin(mesh, iterations=smoothing_iterations)
+                filter_laplacian(mesh, iterations=smoothing_iterations)
             
             # Process the mesh to fix potential issues before UV unwrapping
             logger.info("Processing mesh to fix potential issues...")
