@@ -1,0 +1,198 @@
+/* ---- Design tokens ------------------------------------------------ */
+:root {
+  --accent: #5b7cff;
+  --gray:   #f4f6f9;
+  --radius: 16px;
+  --font:   "Inter", system-ui, Arial, sans-serif;
+}
+
+/* ---- Global reset ------------------------------------------------- */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body, #root {
+  font-family: var(--font);
+  background: var(--gray);
+  color: #1a1a1a;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Hero section ------------------------------------------------- */
+.m3d-hero {
+  padding: 6rem 1rem 3rem;
+  background: #fff;
+  text-align: center;
+}
+.m3d-hero h1 {
+  font-size: clamp(1.5rem, 4vw, 2.5rem);
+  font-weight: 700;
+  margin-bottom: 1rem;
+}
+.m3d-hero p {
+  font-size: 1.125rem;
+  color: #444;
+  max-width: 640px;
+  margin: 0 auto;
+}
+.m3d-hero img {
+  width: 90%;
+  max-width: 540px;
+  margin: 2.5rem auto 0;
+  border-radius: var(--radius);
+}
+
+/* ---- Grid wrapper ------------------------------------------------- */
+.m3d-main {
+  flex: 1;
+  display: grid;
+  gap: 3rem;
+  place-items: center;
+  padding: 3rem 1rem;
+}
+
+/* ---- Card shell --------------------------------------------------- */
+.m3d-card {
+  background: #fff;
+  border-radius: var(--radius);
+  box-shadow: 0 4px 18px rgba(0,0,0,.08);
+  padding: 2.5rem 2rem;
+}
+
+.m3d-title {
+  font-size: 2rem;
+  font-weight: 700;
+  margin-bottom: 24px;
+  color: var(--accent);
+  letter-spacing: -1px;
+  transition: color 0.3s;
+}
+
+/* ---- Upload zone -------------------------------------------------- */
+.m3d-upload-zone {
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius);
+  padding: 2.5rem 1rem;
+  cursor: pointer;
+  transition: background 0.25s, border-color 0.25s;
+  margin-bottom: 24px;
+  text-align: center;
+}
+.m3d-upload-zone:hover, .m3d-upload-zone:active {
+  background: #e7ebff;
+  border-color: #3b5cff;
+}
+.m3d-upload-zone strong {
+  font-size: 1.1rem;
+}
+.m3d-upload-zone p {
+  margin-top: .75rem;
+  color: #555;
+}
+
+.m3d-generate-btn {
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  padding: .75rem 1.5rem;
+  border-radius: 12px;
+  font-weight: 600;
+  font-size: 1rem;
+  cursor: pointer;
+  margin-bottom: 24px;
+  box-shadow: 0 2px 8px rgba(91,124,255,0.08);
+  transition: background 0.2s, box-shadow 0.2s;
+}
+.m3d-generate-btn:hover:not(:disabled) {
+  background: #3b5cff;
+  box-shadow: 0 4px 16px rgba(91,124,255,0.15);
+}
+.m3d-generate-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.m3d-output-label {
+  font-size: 1rem;
+  color: #444;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+/* ---- Pipeline strip ---------------------------------------------- */
+.m3d-pipeline {
+  display: flex;
+  gap: 1.5rem;
+  align-items: center;
+  justify-content: center;
+}
+.m3d-pipeline img {
+  width: 80px;
+  height: 80px;
+  border-radius: 12px;
+}
+
+/* ---- 3-D viewer --------------------------------------------------- */
+#m3d-viewer {
+  width: 260px;
+  height: 180px;
+  background: #000;
+  border-radius: 12px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #e7ebff;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  overflow: hidden;
+  position: relative;
+}
+.m3d-output-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  opacity: 0;
+  animation: fadeIn 0.7s forwards;
+}
+@keyframes fadeIn {
+  to { opacity: 1; }
+}
+
+#m3d-download-btn {
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  padding: .5rem 1.25rem;
+  border-radius: 10px;
+  font-weight: 500;
+  font-size: .95rem;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+#m3d-download-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+#m3d-download-btn:hover:not(:disabled) {
+  background: #3b5cff;
+}
+
+.m3d-right-img {
+  width: 100%;
+  max-width: 340px;
+  border-radius: 16px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.08);
+  transition: transform 0.3s;
+}
+.m3d-right-img:hover {
+  transform: scale(1.04) rotate(-2deg);
+}
+
+/* ---- Footer ------------------------------------------------------- */
+.m3d-footer {
+  font-size: .85rem;
+  padding: 2rem 0;
+  color: #666;
+  text-align: center;
+} 

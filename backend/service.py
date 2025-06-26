@@ -409,26 +409,23 @@ try:
             prompt = data.get("prompt", "a clean 3‑D asset")
             preview = data.get("preview", True)
 
-            # Get parameters - use optimization profile if available
-            if OPTIMIZATION_AVAILABLE and "profile" in data:
+            # Get parameters - use optimization profile if available, otherwise default to maximum quality
+            profile_name = data.get("profile", "maximum_quality") # Default to maximum_quality
+            custom_params = data.get("custom_params", {})
+
+            if OPTIMIZATION_AVAILABLE:
                 try:
-                    profile_params = get_profile_parameters(data["profile"], data.get("custom_params", {}))
-                    params = {
-                        'num_inference_steps': profile_params['num_inference_steps'],
-                        'guidance_scale': profile_params['guidance_scale'],
-                        'smoothing_iterations': profile_params['smoothing_iterations'],
-                        'mesh_threshold': profile_params['mesh_threshold'],
-                        'preview_resolution': profile_params['preview_resolution'],
-                        'full_resolution': profile_params['full_resolution'],
-                    }
-                    logger.info(f"Using optimization profile: {data['profile']}")
+                    params = get_profile_parameters(profile_name, custom_params)
+                    logger.info(f"Using parameters from '{profile_name}' profile.")
                 except Exception as e:
-                    logger.warning(f"Failed to load profile {data['profile']}: {e}, using defaults")
-                    params = OptimizedParameters.get_optimized_params(data)
+                    logger.warning(f"Failed to load profile '{profile_name}': {e}. Defaulting to 'standard'.")
+                    params = get_profile_parameters("standard", custom_params)
             else:
+                # Fallback if optimization_config.py is missing
+                logger.warning("Optimization profiles not available. Using legacy parameter logic.")
                 params = OptimizedParameters.get_optimized_params(data)
-            
-            logger.info(f"Using optimized parameters: {params}")
+
+            logger.info(f"Using generation parameters: {params}")
 
             # A) Edge detection (optimized)
             edge = app.edge_det(pil);

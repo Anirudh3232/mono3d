@@ -39,3 +39,8 @@ Flask-Cors==4.0.1
 # ─────────────── System Monitoring ───────────────
 # For CPU and memory monitoring
 psutil>=5.9.0
+
+# ────────── Testing & Optimization ───────────
+# For running test clients and hyperparameter tuning
+requests>=2.31.0
+bayesian-optimization>=1.4.3

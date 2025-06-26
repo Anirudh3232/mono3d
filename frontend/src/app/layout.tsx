@@ -14,7 +14,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>
+      <head>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet" />
+      </head>
+      <body className="bg-[#0a0a0f] font-sans text-white min-h-screen">
         {children}
         <Toaster position="top-right" />
       </body>
