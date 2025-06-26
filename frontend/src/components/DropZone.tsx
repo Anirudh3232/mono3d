@@ -1,44 +1,63 @@
 "use client";
-import { useRef, useState } from "react";
-import { fileToBase64 } from "@/lib/toBase64";
 
-export default function DropZone({ onReady }:{ onReady:(b64:string)=>void }) {
-  const [hover, setHover] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+import { useState, useCallback } from "react";
+import { useDropzone } from "react-dropzone";
 
-  const handleFile = async (file: File) => {
-    if (file) {
-      onReady(await fileToBase64(file));
-    }
-  };
+interface DropZoneProps {
+  onFileChange: (file: File, dataUrl: string) => void;
+}
+
+const DropZone: React.FC<DropZoneProps> = ({ onFileChange }) => {
+  const [preview, setPreview] = useState<string | null>(null);
+
+  const onDrop = useCallback(
+    (acceptedFiles: File[]) => {
+      if (acceptedFiles.length > 0) {
+        const file = acceptedFiles[0];
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          setPreview(dataUrl);
+          onFileChange(file, dataUrl);
+        };
+        reader.readAsDataURL(file);
+      }
+    },
+    [onFileChange]
+  );
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    accept: { "image/png": [".png"], "image/jpeg": [".jpg", ".jpeg"] },
+    multiple: false,
+  });
+
+  const activeStyle = "bg-blue-50 border-blue-600";
+  const baseStyle = "border-gray-400";
 
   return (
     <div
-      className={`border-2 border-dashed rounded-xl p-8 text-center transition ${hover ? "bg-gray-100" : ""}`}
-      onDragOver={e => { e.preventDefault(); setHover(true); }}
-      onDragLeave={() => setHover(false)}
-      onDrop={async e => {
-        e.preventDefault(); setHover(false);
-        if (e.dataTransfer.files[0]) {
-          handleFile(e.dataTransfer.files[0]);
-        }
-      }}
-      onClick={() => inputRef.current?.click()}
-      style={{ cursor: "pointer" }}
+      {...getRootProps()}
+      className={`upload-zone border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors duration-300 ease-in-out ${
+        isDragActive ? activeStyle : baseStyle
+      } hover:border-blue-600`}
     >
-      <input
-        type="file"
-        accept="image/png"
-        style={{ display: "none" }}
-        ref={inputRef}
-        onChange={e => {
-          if (e.target.files && e.target.files[0]) {
-            handleFile(e.target.files[0]);
-          }
-        }}
-      />
-      Drop a PNG sketch here<br />
-      <span style={{ color: "#888", fontSize: "0.9em" }}>(or click to select)</span>
+      <input {...getInputProps()} />
+      {preview ? (
+        <div className="relative w-full h-48">
+          <img src={preview} alt="Sketch preview" className="w-full h-full object-contain rounded-md" />
+          <div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center text-white opacity-0 hover:opacity-100 transition-opacity">
+            Click or drag to replace image
+          </div>
+        </div>
+      ) : (
+        <div>
+          <strong className="text-gray-800">Drag & Drop file here</strong>
+          <p className="text-gray-500 mt-2">or click to browse (PNG / JPG)</p>
+        </div>
+      )}
     </div>
   );
-}
+};
+
+export default DropZone;
