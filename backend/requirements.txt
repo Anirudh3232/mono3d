@@ -1,6 +1,6 @@
-# PyTorch (standard version for Colab compatibility)
-torch>=2.2.0
-torchvision>=0.17.0
+# PyTorch (compatible versions for Colab)
+torch==2.2.2
+torchvision==0.17.2
 
 # Model stack (keep only what you use)
 diffusers>=0.27.0
@@ -8,7 +8,6 @@ transformers>=4.38.0
 accelerate>=0.27.0
 peft>=0.9.0
 huggingface-hub>=0.20.0
-controlnet-aux>=0.0.7
 einops>=0.7.0
 omegaconf>=2.3.0
 
