@@ -195,17 +195,28 @@ try:
     logger.info("Importing diffusers …");
     _flush()
     from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, EulerAncestralDiscreteScheduler
-    # Removed controlnet_aux import to avoid compatibility issues
-    # Removed unused imports: trimesh.smoothing and TSR
+    # TripoSR imports
+    TRIPOSR_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "TripoSR-main")
+    sys.path.append(TRIPOSR_PATH)
+    from tsr.system import TSR
+    from tsr.utils import remove_background, resize_foreground
+    import rembg
 
-    # Import optimization profiles (optional)
-    OPTIMIZATION_AVAILABLE = False
-    try:
-        from optimization_config import get_profile_parameters, list_profiles, get_recommended_profile
-        OPTIMIZATION_AVAILABLE = True
-        logger.info("Optimization profiles loaded successfully")
-    except ImportError:
-        logger.warning("Optimization profiles not available, using default parameters")
+    # Load TripoSR model at startup
+    CHECKPOINT_DIR = os.path.join(TRIPOSR_PATH, "checkpoints")
+    CONFIG_NAME = "config.yaml"
+    WEIGHT_NAME = "model.ckpt"
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info(f"Loading TripoSR model on {DEVICE} ...")
+    triposr_model = TSR.from_pretrained(
+        CHECKPOINT_DIR,
+        config_name=CONFIG_NAME,
+        weight_name=WEIGHT_NAME,
+    )
+    triposr_model.to(DEVICE)
+    triposr_model.eval()
+    logger.info("TripoSR model loaded.")
+    rembg_session = rembg.new_session()
 
     # ───────────── Flask app setup ─────────────
     app = Flask(__name__);
@@ -227,17 +238,24 @@ try:
             # Decode input image
             try:
                 png = base64.b64decode(data["sketch"].split(",", 1)[1])
-                pil = Image.open(io.BytesIO(png)).convert("RGB")
-            except:
-                return jsonify({"error": "Bad image data"}), 400
+                pil = Image.open(io.BytesIO(png)).convert("RGBA")
+            except Exception as e:
+                return jsonify({"error": f"Bad image data: {str(e)}"}), 400
 
-            # --- 3D generation logic here ---
-            # For demonstration, just return the input image as output
-            # Replace this with your actual 3D generation logic
-            concept = pil  # Replace with your generated 3D image (PIL Image)
+            # Preprocess: remove background and resize
+            pil = remove_background(pil, rembg_session)
+            pil = resize_foreground(pil, ratio=0.85)
+            pil = pil.convert("RGB")
 
+            # Run TripoSR model
+            with torch.no_grad():
+                scene_codes = triposr_model([pil], device=DEVICE)
+                render_images = triposr_model.render(scene_codes, n_views=1, return_type="pil")
+                rendered_img = render_images[0][0]  # First view of first image
+
+            # Return rendered PNG
             output_buffer = io.BytesIO()
-            concept.save(output_buffer, format="PNG")
+            rendered_img.save(output_buffer, format="PNG")
             output_buffer.seek(0)
 
             clear_gpu_memory()
