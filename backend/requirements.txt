@@ -1,46 +1,21 @@
-# ───────────────── PyTorch & CUDA ──────────────────
-# Using torch 2.2.2 with CUDA 11.8 as a stable base
+# PyTorch (with CUDA if needed)
 torch==2.2.2+cu118
-torchvision==0.17.2+cu118
-torchaudio==2.2.2+cu118
--f https://download.pytorch.org/whl/torch_stable.html
+# -f https://download.pytorch.org/whl/torch_stable.html
 
-# ────────── Diffusers & Transformers Stack ───────────
-# Pinned to stable, compatible versions
+# Model stack (keep only what you use)
 diffusers==0.27.2
 transformers==4.38.2
 accelerate==0.27.2
 peft==0.9.0
 huggingface-hub==0.20.3
 controlnet-aux==0.0.7
-
-# ────────── TripoSR & 3D Vision Stack ────────────
-# Key libraries for 3D generation and processing
 einops==0.7.0
 omegaconf==2.3.0
-trimesh==4.4.0
-scipy>=1.10.0
-# Our custom additions for mesh generation and texturing
-PyMCubes==0.1.4
-xatlas==0.0.10
 
-# ─────────────── Image & Numerics ───────────────
-numpy<1.27,>=1.23
+# Image processing
 Pillow>=9.5.0
-timm==0.9.16
-imageio==2.34.0
-imageio-ffmpeg
+numpy<1.27,>=1.23
 
-# ─────────────── API Server ───────────────
-# Pinned for stability
+# API server
 Flask==3.0.3
 Flask-Cors==4.0.1
-
-# ─────────────── System Monitoring ───────────────
-# For CPU and memory monitoring
-psutil>=5.9.0
-
-# ────────── Testing & Optimization ───────────
-# For running test clients and hyperparameter tuning
-requests>=2.31.0
-bayesian-optimization>=1.4.3

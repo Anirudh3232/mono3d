@@ -124,14 +124,7 @@ def clear_gpu_memory():
     """Optimized GPU memory clearing with reduced CPU overhead"""
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-        # Only run GC occasionally to reduce CPU overhead
-        if hasattr(clear_gpu_memory, '_gc_counter'):
-            clear_gpu_memory._gc_counter += 1
-        else:
-            clear_gpu_memory._gc_counter = 0
-        
-        if clear_gpu_memory._gc_counter % 3 == 0:  # Run GC every 3rd call
-            gc.collect()
+        gc.collect()
 
 def gpu_mem_mb():
     return (torch.cuda.memory_allocated() / 1024 ** 2) if torch.cuda.is_available() else 0
@@ -225,160 +218,9 @@ try:
 
     @app.get("/health")
     def health():
-        return jsonify({
-            "status": "ok", 
-            "gpu_mb": gpu_mem_mb(),
-            "cpu_percent": psutil.cpu_percent(interval=None),
-            "memory_percent": psutil.virtual_memory().percent,
-            "models_loaded": all(hasattr(app, x) for x in ("edge_det", "cnet", "sd", "triposr")),
-            "optimization_available": OPTIMIZATION_AVAILABLE
-        })
+        return jsonify({"status": "ok"})
 
-    @app.route("/test", methods=["GET", "POST"])
-    def test():
-        return jsonify({"message": "Optimized server is working!", "method": request.method})
-
-    @app.get("/latest_concept_image")
-    def get_latest_concept_image():
-        if app.last_concept_image:
-            buf = io.BytesIO()
-            app.last_concept_image.save(buf, format="PNG")
-            buf.seek(0)
-            return send_file(buf, mimetype='image/png')
-        return jsonify({"error": "No concept image has been generated yet."}), 404
-
-    @app.get("/profiles")
-    def get_profiles():
-        """Get available optimization profiles"""
-        if not OPTIMIZATION_AVAILABLE:
-            return jsonify({"error": "Optimization profiles not available"}), 503
-        
-        try:
-            profiles = list_profiles()
-            return jsonify({
-                "profiles": profiles,
-                "available": True
-            })
-        except Exception as e:
-            logger.error(f"Error getting profiles: {e}")
-            return jsonify({"error": str(e)}), 500
-
-    @app.get("/recommend")
-    def get_recommendation():
-        """Get recommended profile based on system specs"""
-        if not OPTIMIZATION_AVAILABLE:
-            return jsonify({"error": "Optimization profiles not available"}), 503
-        
-        try:
-            cpu_cores = psutil.cpu_count()
-            gpu_memory_gb = 0
-            if torch.cuda.is_available():
-                gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-            
-            use_case = request.args.get("use_case", "general")
-            recommended = get_recommended_profile(cpu_cores, gpu_memory_gb, use_case)
-            
-            return jsonify({
-                "recommended_profile": recommended,
-                "system_specs": {
-                    "cpu_cores": cpu_cores,
-                    "gpu_memory_gb": round(gpu_memory_gb, 1),
-                    "use_case": use_case
-                }
-            })
-        except Exception as e:
-            logger.error(f"Error getting recommendation: {e}")
-            return jsonify({"error": str(e)}), 500
-
-    # ───────────── Load models with optimizations ─────────────
-    device = "cuda" if torch.cuda.is_available() else "cpu";
-    logger.info(f"Using {device}")
-    if device == "cuda":
-        torch.backends.cudnn.benchmark = True
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-        # Optimize CUDA memory allocation
-        torch.cuda.set_per_process_memory_fraction(0.9)  # Use 90% of GPU memory
-
-    logger.info("Loading edge detector …");
-    _flush();
-    app.edge_det = CannyDetector()
-    
-    logger.info("Loading ControlNet …");
-    _flush();
-    app.cnet = ControlNetModel.from_pretrained(
-        "lllyasviel/sd-controlnet-canny", torch_dtype=torch.float16).to(device)
-    
-    logger.info("Loading Stable Diffusion …");
-    _flush()
-    app.sd = StableDiffusionControlNetPipeline.from_pretrained(
-        "runwayml/stable-diffusion-v1-5", controlnet=app.cnet,
-        torch_dtype=torch.float16).to(device)
-    
-    # Optimized scheduler for faster inference
-    logger.info("Using optimized scheduler for faster inference.")
-    app.sd.scheduler = EulerAncestralDiscreteScheduler.from_config(app.sd.scheduler.config)
-    
-    try:
-        app.sd.enable_xformers_memory_efficient_attention();
-        logger.info("xformers enabled")
-    except Exception:
-        logger.warning("xformers not available — using plain attention")
-    
-    # Optimized memory management
-    app.sd.enable_model_cpu_offload();
-    app.sd.enable_attention_slicing()
-    app.sd.enable_vae_slicing()  # Additional optimization
-
-    logger.info("Loading TripoSR …");
-    _flush()
-    os.makedirs(os.path.join(TSR_PATH, "checkpoints"), exist_ok=True)
-    app.last_concept_image = None
-
-    def ensure_module_on_device(module, target_device):
-        """Helper function to ensure all tensors in a module are on the right device"""
-        module.to(target_device)
-        for attr_name in dir(module):
-            try:
-                attr = getattr(module, attr_name)
-                if isinstance(attr, torch.Tensor):
-                    setattr(module, attr_name, attr.to(target_device))
-                elif hasattr(attr, 'to'):
-                    attr.to(target_device)
-            except Exception:
-                continue
-        return module
-
-    # Load TripoSR on GPU with mixed precision
-    app.triposr = TSR.from_pretrained(
-        "stabilityai/TripoSR",
-        config_name="config.yaml",
-        weight_name="model.ckpt"
-    )
-
-    # Ensure everything is on the correct device
-    app.triposr = ensure_module_on_device(app.triposr, device)
-    if hasattr(app.triposr, 'renderer'):
-        app.triposr.renderer = ensure_module_on_device(app.triposr.renderer, device)
-        if hasattr(app.triposr.renderer, 'triplane'):
-            app.triposr.renderer.triplane = app.triposr.renderer.triplane.to(device)
-
-    if device == "cuda":
-        # Convert to half precision if using CUDA
-        app.triposr = app.triposr.half()
-        if hasattr(app.triposr, 'renderer'):
-            app.triposr.renderer = app.triposr.renderer.half()
-
-    app.triposr.eval()
-    logger.info(f"TripoSR loaded on {device}");
-    _flush()
-
-    logger.info("✅ Optimized models ready");
-    _flush()
-
-    # ───────────── Optimized /generate endpoint ─────────────
     @app.post("/generate")
-    @timing
     def generate():
         try:
             if not request.is_json:
@@ -387,18 +229,6 @@ try:
             if "sketch" not in data:
                 return jsonify({"error": "Missing sketch"}), 400
 
-            # Check cache first
-            cache_key = f"{data['sketch'][:100]}_{data.get('prompt', '')}_{data.get('preview', True)}"
-            cached_result = result_cache.get(cache_key)
-            if cached_result:
-                logger.info("Returning cached result")
-                return send_file(
-                    cached_result,
-                    as_attachment=True,
-                    download_name='3d_model.zip',
-                    mimetype='application/zip'
-                )
-
             # Decode input image
             try:
                 png = base64.b64decode(data["sketch"].split(",", 1)[1])
@@ -406,154 +236,25 @@ try:
             except:
                 return jsonify({"error": "Bad image data"}), 400
 
-            prompt = data.get("prompt", "a clean 3‑D asset")
-            preview = data.get("preview", True)
+            # --- 3D generation logic here ---
+            # For demonstration, just return the input image as output
+            # Replace this with your actual 3D generation logic
+            concept = pil  # Replace with your generated 3D image (PIL Image)
 
-            # Get parameters - use optimization profile if available, otherwise default to maximum quality
-            profile_name = data.get("profile", "maximum_quality") # Default to maximum_quality
-            custom_params = data.get("custom_params", {})
+            output_buffer = io.BytesIO()
+            concept.save(output_buffer, format="PNG")
+            output_buffer.seek(0)
 
-            if OPTIMIZATION_AVAILABLE:
-                try:
-                    params = get_profile_parameters(profile_name, custom_params)
-                    logger.info(f"Using parameters from '{profile_name}' profile.")
-                except Exception as e:
-                    logger.warning(f"Failed to load profile '{profile_name}': {e}. Defaulting to 'standard'.")
-                    params = get_profile_parameters("standard", custom_params)
-            else:
-                # Fallback if optimization_config.py is missing
-                logger.warning("Optimization profiles not available. Using legacy parameter logic.")
-                params = OptimizedParameters.get_optimized_params(data)
-
-            logger.info(f"Using generation parameters: {params}")
-
-            # A) Edge detection (optimized)
-            edge = app.edge_det(pil);
-            del pil
-
-            # B) Stable Diffusion with optimized parameters
-            with torch.no_grad():
-                concept = app.sd(
-                    prompt, image=edge,
-                    num_inference_steps=params['num_inference_steps'], 
-                    guidance_scale=params['guidance_scale']
-                ).images[0]
-            del edge;
             clear_gpu_memory()
-
-            # C) Scene codes - use same device as model
-            with torch.cuda.amp.autocast() if device == "cuda" else nullcontext():
-                codes = app.triposr([concept], device=device)
-                logger.info(f"Codes device: {codes.device}")
-
-                # Re-ensure renderer is on correct device
-                if hasattr(app.triposr, 'renderer'):
-                    app.triposr.renderer = ensure_module_on_device(app.triposr.renderer, codes.device)
-            clear_gpu_memory()
-
-            # D) Mesh extraction with optimized resolution
-            res = params['preview_resolution'] if preview else params['full_resolution']
-            with torch.no_grad():
-                with torch.cuda.amp.autocast() if device == "cuda" else nullcontext():
-                    # Final device check before mesh extraction
-                    if hasattr(app.triposr, 'renderer'):
-                        app.triposr.renderer = ensure_module_on_device(app.triposr.renderer, codes.device)
-                    meshes = app.triposr.extract_mesh(codes, resolution=res, threshold=params['mesh_threshold'])
-            del codes;
-            clear_gpu_memory()
-
-            # Export OBJ and texture
-            mesh = meshes[0]
-
-            # Conditional Laplacian smoothing (only if enabled)
-            if params['smoothing_iterations'] > 0:
-                logger.info(f"Applying Laplacian smoothing to the mesh (iterations={params['smoothing_iterations']})...")
-                try:
-                    if mesh.vertices.shape[0] > 0 and mesh.faces.shape[0] > 0:
-                        filter_laplacian(mesh, iterations=params['smoothing_iterations'])
-                        logger.info("Laplacian smoothing completed successfully")
-                    else:
-                        logger.warning("Mesh is empty, skipping smoothing")
-                except Exception as e:
-                    logger.warning(f"Laplacian smoothing failed: {e}, continuing without smoothing")
-
-            # Process the mesh to fix potential issues before UV unwrapping
-            logger.info("Processing mesh to fix potential issues...")
-            try:
-                mesh.process()
-                logger.info("Mesh processing completed")
-            except Exception as e:
-                logger.warning(f"Mesh processing failed: {e}, continuing with original mesh")
-
-            # Use xatlas to generate UVs
-            import xatlas
-            import trimesh
-
-            vmapping, indices, uvs = xatlas.parametrize(mesh.vertices, mesh.faces)
-
-            # Create a new mesh with the unwrapped UVs
-            uv_mesh = trimesh.Trimesh(
-                vertices=mesh.vertices[vmapping],
-                faces=indices,
-                vertex_normals=mesh.vertex_normals[vmapping],
-                visual=trimesh.visual.TextureVisuals(uv=uvs)
-            )
-
-            # Create a texture from the concept image
-            texture = concept.resize((1024, 1024))
-
-            # Create material
-            material = trimesh.visual.material.SimpleMaterial(image=texture)
-
-            # Assign material to the mesh
-            uv_mesh.visual.material = material
-            app.last_concept_image = concept.copy()
-
-            # Export to a zip file in memory
-            import zipfile
-            zip_buffer = io.BytesIO()
-
-            # Manually export each component for robustness
-            obj_data = trimesh.exchange.obj.export_obj(uv_mesh, mtl_name="texture.mtl")
-
-            # Manually create the MTL file content as a string
-            mtl_data = f"""
-newmtl material_0
-Ka 1.000000 1.000000 1.000000
-Kd 1.000000 1.000000 1.000000
-Ks 0.000000 0.000000 0.000000
-Tr 1.000000
-illum 2
-Ns 0.000000
-map_Kd texture.png
-"""
-
-            # Save the texture image to a buffer
-            texture_buffer = io.BytesIO()
-            uv_mesh.visual.material.image.save(texture_buffer, format='PNG')
-            texture_data = texture_buffer.getvalue()
-
-            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-                zf.writestr("model.obj", obj_data)
-                zf.writestr("texture.mtl", mtl_data)
-                zf.writestr("texture.png", texture_data)
-
-            zip_buffer.seek(0)
-
-            # Cache the result
-            result_cache.put(cache_key, zip_buffer)
-
-            clear_gpu_memory();
             _flush()
             return send_file(
-                zip_buffer,
-                as_attachment=True,
-                download_name='3d_model.zip',
-                mimetype='application/zip'
+                output_buffer,
+                mimetype="image/png",
+                as_attachment=False
             )
 
         except Exception as e:
-            logger.error("Error in /generate", exc_info=True);
+            logger.error("Error in /generate", exc_info=True)
             _flush()
             clear_gpu_memory()
             return jsonify({"error": str(e)}), 500
@@ -565,4 +266,3 @@ except Exception:
     logger.error("❌ Error during initialization", exc_info=True);
     _flush()
     raise
-git
