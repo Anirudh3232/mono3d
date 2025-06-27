@@ -195,21 +195,16 @@ try:
     logger.info("Importing diffusers …");
     _flush()
     from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, EulerAncestralDiscreteScheduler
-    from controlnet_aux import CannyDetector
-    from trimesh.smoothing import filter_laplacian
+    # Removed controlnet_aux import to avoid compatibility issues
+    # Removed unused imports: trimesh.smoothing and TSR
 
-    PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-    TSR_PATH = os.path.join(PROJECT_DIR, "TripoSR-main");
-    sys.path.append(TSR_PATH)
-    from tsr.system import TSR
-    
-    # Import optimization profiles
+    # Import optimization profiles (optional)
+    OPTIMIZATION_AVAILABLE = False
     try:
         from optimization_config import get_profile_parameters, list_profiles, get_recommended_profile
         OPTIMIZATION_AVAILABLE = True
         logger.info("Optimization profiles loaded successfully")
     except ImportError:
-        OPTIMIZATION_AVAILABLE = False
         logger.warning("Optimization profiles not available, using default parameters")
 
     # ───────────── Flask app setup ─────────────
