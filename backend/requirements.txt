@@ -1,6 +1,6 @@
 # PyTorch (with CUDA if needed)
 torch==2.2.2+cu118
-# -f https://download.pytorch.org/whl/torch_stable.html
+-f https://download.pytorch.org/whl/torch_stable.html
 
 # Model stack (keep only what you use)
 diffusers==0.27.2
