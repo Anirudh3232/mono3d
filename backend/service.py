@@ -97,7 +97,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────── Performance Monitoring ───────────────────────────
+
 def timing(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
@@ -129,7 +129,7 @@ def clear_gpu_memory():
 def gpu_mem_mb():
     return (torch.cuda.memory_allocated() / 1024 ** 2) if torch.cuda.is_available() else 0
 
-# ─────────────────────────── Parameter Optimization ───────────────────────────
+
 class OptimizedParameters:
     """Optimized default parameters to reduce CPU usage"""
     
@@ -157,7 +157,7 @@ class OptimizedParameters:
             'full_resolution': cls.FULL_RESOLUTION
         }
 
-# ─────────────────────────── Caching System ──────────────────────────────────
+
 class ResultCache:
     """Simple caching system to avoid redundant computations"""
     
@@ -185,10 +185,10 @@ class ResultCache:
         if key not in self.access_order:
             self.access_order.append(key)
 
-# Global cache instance
+
 result_cache = ResultCache()
 
-# ─────────────────────────── Service Initialization ──────────────────────────
+
 
 print("Starting optimized service initialization …")
 try:
@@ -218,7 +218,7 @@ try:
     logger.info("TripoSR model loaded.")
     rembg_session = rembg.new_session()
 
-    # ───────────── Flask app setup ─────────────
+    
     app = Flask(__name__);
     CORS(app)
 
