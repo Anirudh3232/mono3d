@@ -12,8 +12,7 @@ from contextlib import nullcontext
 import psutil
 
 
-# ─────────────────────────── Hot‑patch dependencies ────────────────────────────
-# 1) Create mock cache classes
+
 class MockCache:
     def __init__(self, *args, **kwargs):
         pass
@@ -41,14 +40,14 @@ class MockEncoderDecoderCache(MockCache):
         return self
 
 
-# 2) Patch transformers main module
+
 import transformers
 
 for _n in ("Cache", "DynamicCache", "EncoderDecoderCache"):
     if not hasattr(transformers, _n):
         setattr(transformers, _n, MockEncoderDecoderCache)
 
-# 3) Patch transformers.cache_utils
+
 try:
     import transformers.cache_utils as _tcu
 
@@ -58,7 +57,7 @@ try:
 except ImportError:
     pass
 
-# 4) Patch transformers.models.encoder_decoder
+
 try:
     import transformers.models.encoder_decoder as _ted
 
@@ -67,26 +66,26 @@ try:
 except ImportError:
     pass
 
-# 5) Fix diffusers/huggingface_hub mismatch
+
 import huggingface_hub as _hf_hub
 
 if not hasattr(_hf_hub, "cached_download"):
     _hf_hub.cached_download = _hf_hub.hf_hub_download
 
-# 6) Patch accelerate for peft compatibility
+
 _acc_mem = importlib.import_module("accelerate.utils.memory")
 if not hasattr(_acc_mem, "clear_device_cache"):
     _acc_mem.clear_device_cache = lambda *a, **k: None
 
-# 2) Hot-patch diffusers to use our mock cache
+
 import diffusers.models.attention_processor
 diffusers.models.attention_processor.AttnProcessor2_0 = MockCache
 
-# 3) Hot-patch transformers to use our mock cache
+
 import transformers.models.llama.modeling_llama
 transformers.models.llama.modeling_llama.AttnProcessor2_0 = MockCache
 
-# ─────────────────────────── Logging Setup ───────────────────────────────────
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -118,7 +117,7 @@ def _flush():
 
 atexit.register(_flush)
 
-# ─────────────────────────── Optimized Helpers ───────────────────────────────
+
 
 def clear_gpu_memory():
     """Optimized GPU memory clearing with reduced CPU overhead"""
