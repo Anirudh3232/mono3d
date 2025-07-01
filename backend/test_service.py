@@ -16,7 +16,7 @@ def test_server():
     return True
 
 
-# Create a simple test image if it doesn't exist
+
 test_image_path = "test_sketch.png"
 if not os.path.exists(test_image_path):
     print("Creating test sketch image...")
@@ -29,7 +29,6 @@ if not os.path.exists(test_image_path):
     img.save(test_image_path)
     print(f"Created test image at {test_image_path}")
 
-# Read and encode the image
 print("\nReading and encoding test image...")
 with open(test_image_path, "rb") as image_file:
     encoded_string = base64.b64encode(image_file.read()).decode()
