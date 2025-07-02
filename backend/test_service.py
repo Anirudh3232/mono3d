@@ -25,7 +25,7 @@ if not os.path.exists(test_image_path):
     draw = ImageDraw.Draw(img)
     # Draw a simple shape (a circle)
     draw.ellipse([50, 50, 200, 200], outline='black', width=2)
-    # Save the image
+    
     img.save(test_image_path)
     print(f"Created test image at {test_image_path}")
 
@@ -51,7 +51,7 @@ print(f"Data keys: {list(data.keys())}")
 if not test_server():
     exit(1)
 
-# Send the request
+
 try:
     response = requests.post(url, json=data)
     print(f"\nResponse status code: {response.status_code}")
