@@ -34,7 +34,7 @@ with open(test_image_path, "rb") as image_file:
     encoded_string = base64.b64encode(image_file.read()).decode()
 print("Image encoded successfully")
 
-# Prepare the request
+
 url = "http://localhost:5000/generate"
 data = {
     "sketch": f"data:image/png;base64,{encoded_string}",
@@ -47,7 +47,7 @@ print(f"URL: {url}")
 print(f"Method: POST")
 print(f"Data keys: {list(data.keys())}")
 
-# First test the server connection
+
 if not test_server():
     exit(1)
 
