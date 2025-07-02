@@ -59,9 +59,9 @@ try:
         print("Service is working!")
         print("Response received successfully")
     else:
-        print(f"❌ Error: {response.status_code}")
+        print(f" Error: {response.status_code}")
         print("Response text:", response.text)
 except requests.exceptions.ConnectionError:
-    print("❌ Could not connect to the service. Make sure it's running on port 5000")
+    print(" Could not connect to the service. Make sure it's running on port 5000")
 except Exception as e:
-    print(f"❌ Unexpected error: {str(e)}")
+    print(f" Unexpected error: {str(e)}")
