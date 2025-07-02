@@ -56,7 +56,7 @@ try:
     response = requests.post(url, json=data)
     print(f"\nResponse status code: {response.status_code}")
     if response.status_code == 200:
-        print("✅ Service is working!")
+        print("Service is working!")
         print("Response received successfully")
     else:
         print(f"❌ Error: {response.status_code}")
