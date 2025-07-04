@@ -1,11 +1,11 @@
-# Core ML
+
 torch==2.2.2
 torchvision==0.17.2
 einops>=0.7.0
 omegaconf>=2.3.0
 trimesh>=4.0.5
 
-# TripoSR and HuggingFace
+
 diffusers>=0.27.0
 transformers>=4.38.0
 accelerate>=0.27.0
