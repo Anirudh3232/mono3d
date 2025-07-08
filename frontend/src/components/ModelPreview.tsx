@@ -44,13 +44,13 @@ export default function ModelPreview({ objB64 }: ModelPreviewProps) {
     directionalLight.position.set(0, 1, 0);
     scene.add(directionalLight);
 
-    // Add controls
+    
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
     controlsRef.current = controls;
 
-    // Load OBJ
+  
     const loader = new OBJLoader();
     const objData = atob(objB64);
     const objBlob = new Blob([objData], { type: 'model/obj' });
@@ -64,7 +64,7 @@ export default function ModelPreview({ objB64 }: ModelPreviewProps) {
         const center = box.getCenter(new THREE.Vector3());
         object.position.sub(center);
 
-        // Scale the model to fit
+      
         const size = box.getSize(new THREE.Vector3());
         const maxDim = Math.max(size.x, size.y, size.z);
         const scale = 2 / maxDim;
@@ -88,7 +88,7 @@ export default function ModelPreview({ objB64 }: ModelPreviewProps) {
     };
     animate();
 
-    // Handle resize
+    
     const handleResize = () => {
       if (!containerRef.current || !rendererRef.current) return;
       
