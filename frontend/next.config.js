@@ -6,7 +6,7 @@ const nextConfig = {
     forceSwcTransforms: true,
   },
   webpack: (config, { isServer }) => {
-    // Add any webpack configurations here
+   
     return config;
   },
 }
