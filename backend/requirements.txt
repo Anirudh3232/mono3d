@@ -1,0 +1,59 @@
+# ───────────────── PyTorch & CUDA ──────────────────
+# Using torch 2.2.2 with CUDA 11.8 as a stable base
+torch==2.2.2+cu118
+torchvision==0.17.2+cu118
+torchaudio==2.2.2+cu118
+-f https://download.pytorch.org/whl/torch_stable.html
+
+# ────────── Diffusers & Transformers Stack ───────────
+# Pinned to stable, compatible versions
+diffusers==0.27.2
+transformers==4.38.2
+accelerate==0.27.2
+peft==0.9.0
+huggingface-hub==0.20.3
+controlnet-aux==0.0.7
+
+# ────────── TripoSR & 3D Vision Stack ────────────
+# Key libraries for 3D generation and processing
+einops==0.7.0
+omegaconf==2.3.0
+trimesh==4.4.0
+scipy>=1.10.0,<1.12.0
+# Our custom additions for mesh generation and texturing
+PyMCubes==0.1.4
+xatlas==0.0.10
+
+# ─────────────── Image & Numerics ───────────────
+numpy>=1.23.0,<1.27.0
+Pillow>=9.5.0,<11.0.0
+timm==0.9.16
+imageio==2.34.0
+imageio-ffmpeg>=0.4.8
+
+# ─────────────── Background removal ───────────────
+rembg>=2.0.53,<3.0.0
+
+# ─────────────── API Server ───────────────
+# Pinned for stability
+Flask==3.0.3
+Flask-Cors==4.0.1
+
+# ─────────────── System Monitoring ───────────────
+# For CPU and memory monitoring
+psutil>=5.9.0,<6.0.0
+
+# ─────────────── ONNX Runtime ───────────────
+onnxruntime>=1.16.0,<2.0.0
+
+# ─────────────── Testing & Development ───────────────
+# For testing the service
+requests>=2.31.0,<3.0.0
+
+# ─────────────── Optional: Gradio (for TripoSR demo) ───────────────
+# Uncomment if you want to use the Gradio interface
+# gradio>=4.0.0,<5.0.0
+
+# ─────────────── System Dependencies ───────────────
+# These are typically available on most systems, but listed for completeness
+# ffmpeg-python>=0.2.0  # For video processing if needed
