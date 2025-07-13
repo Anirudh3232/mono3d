@@ -219,8 +219,15 @@ try:
     # Load TripoSR model from Hugging Face
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"        
     logger.info(f"Loading TripoSR model from Hugging Face on {DEVICE} ...")
-    from tsr.system import TSR
-    triposr_model = TSR.from_pretrained("stabilityai/TripoSR")
+    # Import TSR from Hugging Face - using the correct import
+    try:
+        from tsr.system import TSR
+        triposr_model = TSR.from_pretrained("stabilityai/TripoSR")
+    except ImportError:
+        # Fallback if tsr module is not available
+        logger.warning("TSR module not found, trying alternative import...")
+        from transformers import AutoModelForCausalLM
+        triposr_model = AutoModelForCausalLM.from_pretrained("stabilityai/TripoSR")
     triposr_model.to(DEVICE)
     triposr_model.eval()
     logger.info("TripoSR model loaded.")
@@ -337,9 +344,8 @@ try:
     app.sd.enable_attention_slicing()
     app.sd.enable_vae_slicing()  # Additional optimization
 
-    logger.info("Loading TripoSR …");
+    logger.info("Loading TripoSR from Hugging Face…");
     _flush()
-    os.makedirs(os.path.join(TRIPOSR_PATH, "checkpoints"), exist_ok=True)
     app.last_concept_image = None
 
     def ensure_module_on_device(module, target_device):
@@ -357,7 +363,11 @@ try:
         return module
 
     # Load TripoSR on GPU with mixed precision
-    app.triposr = TSR.from_pretrained("stabilityai/TripoSR")
+    try:
+        app.triposr = TSR.from_pretrained("stabilityai/TripoSR")
+    except NameError:
+        # If TSR is not defined, use the already loaded model
+        app.triposr = triposr_model
 
     # Ensure everything is on the correct device
     app.triposr = ensure_module_on_device(app.triposr, device)
