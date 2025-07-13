@@ -10,7 +10,7 @@ from typing import Dict, Any
 
 @dataclass
 class OptimizationProfile:
-    """Defines a set of optimization parameters for the 3D generation pipeline"""
+    """Defines a set of optimization parameters for the 3D image generation pipeline"""
     
     name: str
     description: str
@@ -19,13 +19,8 @@ class OptimizationProfile:
     num_inference_steps: int
     guidance_scale: float
     
-    # Mesh extraction parameters
-    mesh_threshold: float
-    smoothing_iterations: int
-    
-    # Resolution parameters
-    preview_resolution: int
-    full_resolution: int
+    # 3D rendering parameters
+    render_resolution: int
     
     # Memory optimization
     enable_caching: bool
@@ -45,10 +40,7 @@ class OptimizationProfiles:
         description="Minimal CPU usage for rapid prototyping",
         num_inference_steps=15,
         guidance_scale=5.0,
-        mesh_threshold=15.0,
-        smoothing_iterations=0,
-        preview_resolution=16,
-        full_resolution=32,
+        render_resolution=256,
         enable_caching=True,
         cache_size=20,
         estimated_duration="30-60 seconds",
@@ -62,10 +54,7 @@ class OptimizationProfiles:
         description="Balanced performance for general use",
         num_inference_steps=25,
         guidance_scale=6.5,
-        mesh_threshold=18.0,
-        smoothing_iterations=0,
-        preview_resolution=24,
-        full_resolution=48,
+        render_resolution=384,
         enable_caching=True,
         cache_size=15,
         estimated_duration="60-120 seconds",
@@ -79,10 +68,7 @@ class OptimizationProfiles:
         description="Optimized default settings",
         num_inference_steps=30,
         guidance_scale=7.5,
-        mesh_threshold=20.0,
-        smoothing_iterations=0,
-        preview_resolution=24,
-        full_resolution=64,
+        render_resolution=512,
         enable_caching=True,
         cache_size=10,
         estimated_duration="90-180 seconds",
@@ -96,10 +82,7 @@ class OptimizationProfiles:
         description="High quality output with moderate CPU usage",
         num_inference_steps=40,
         guidance_scale=8.5,
-        mesh_threshold=22.0,
-        smoothing_iterations=1,
-        preview_resolution=32,
-        full_resolution=96,
+        render_resolution=768,
         enable_caching=True,
         cache_size=8,
         estimated_duration="120-240 seconds",
@@ -113,10 +96,7 @@ class OptimizationProfiles:
         description="Maximum quality output (CPU intensive)",
         num_inference_steps=50,
         guidance_scale=9.5,
-        mesh_threshold=25.0,
-        smoothing_iterations=2,
-        preview_resolution=48,
-        full_resolution=128,
+        render_resolution=1024,
         enable_caching=False,  # Disable caching for maximum quality
         cache_size=0,
         estimated_duration="180-300 seconds",
@@ -146,10 +126,7 @@ def get_profile_parameters(profile_name: str, custom_params: Dict[str, Any] = No
     params = {
         'num_inference_steps': profile.num_inference_steps,
         'guidance_scale': profile.guidance_scale,
-        'mesh_threshold': profile.mesh_threshold,
-        'smoothing_iterations': profile.smoothing_iterations,
-        'preview_resolution': profile.preview_resolution,
-        'full_resolution': profile.full_resolution,
+        'render_resolution': profile.render_resolution,
         'enable_caching': profile.enable_caching,
         'cache_size': profile.cache_size,
     }
@@ -205,27 +182,16 @@ if __name__ == "__main__":
         print(f"  Description: {description}")
         print(f"  Inference Steps: {profile.num_inference_steps}")
         print(f"  Guidance Scale: {profile.guidance_scale}")
-        print(f"  Mesh Threshold: {profile.mesh_threshold}")
-        print(f"  Smoothing: {profile.smoothing_iterations} iterations")
-        print(f"  Preview Resolution: {profile.preview_resolution}")
-        print(f"  Full Resolution: {profile.full_resolution}")
-        print(f"  Caching: {'Enabled' if profile.enable_caching else 'Disabled'}")
+        print(f"  Resolution: {profile.render_resolution}")
         print(f"  Estimated Duration: {profile.estimated_duration}")
         print(f"  CPU Usage: {profile.cpu_usage}")
         print(f"  Quality Level: {profile.quality_level}")
     
     print("\n" + "=" * 50)
-    print("System Recommendations:")
-    print("=" * 50)
+    print("Example: Get parameters for 'standard' profile")
+    params = get_profile_parameters("standard")
+    print(f"Parameters: {params}")
     
-    # Example system recommendations
-    systems = [
-        (4, 4, "prototyping"),
-        (8, 8, "production"), 
-        (16, 16, "maximum_quality"),
-        (2, 2, "general")
-    ]
-    
-    for cpu_cores, gpu_memory, use_case in systems:
-        recommended = get_recommended_profile(cpu_cores, gpu_memory, use_case)
-        print(f"CPU: {cpu_cores} cores, GPU: {gpu_memory}GB, Use: {use_case} -> {recommended}") 
+    print("\nExample: Get recommended profile for system with 8 CPU cores and 8GB GPU")
+    recommended = get_recommended_profile(8, 8.0, "production")
+    print(f"Recommended: {recommended}") 

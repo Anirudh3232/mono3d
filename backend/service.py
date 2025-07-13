@@ -11,7 +11,9 @@ from torch.cuda.amp import autocast
 from contextlib import nullcontext
 import psutil
 
-
+# Add TripoSR-main to Python path
+TRIPOSR_PATH = os.path.join(os.path.dirname(__file__), "TripoSR-main")
+sys.path.insert(0, TRIPOSR_PATH)
 
 class MockCache:
     def __init__(self, *args, **kwargs):
@@ -143,13 +145,8 @@ class OptimizedParameters:
     DEFAULT_INFERENCE_STEPS = 30  # Reduced from 63
     DEFAULT_GUIDANCE_SCALE = 7.5  # Reduced from 9.96 for faster convergence
     
-    # Optimized mesh parameters
-    DEFAULT_MESH_THRESHOLD = 20.0  # Reduced from 25.0 for faster extraction
-    DEFAULT_SMOOTHING_ITERATIONS = 0  # Disabled by default to reduce CPU
-    
-    # Preview mode optimizations
-    PREVIEW_RESOLUTION = 24  # Reduced from 32
-    FULL_RESOLUTION = 64    # Reduced from 128
+    # Render parameters for 3D image
+    DEFAULT_RENDER_RESOLUTION = 512  # Resolution for rendering
     
     @classmethod
     def get_optimized_params(cls, data):
@@ -157,10 +154,7 @@ class OptimizedParameters:
         return {
             'num_inference_steps': int(data.get("num_inference_steps", cls.DEFAULT_INFERENCE_STEPS)),
             'guidance_scale': float(data.get("guidance_scale", cls.DEFAULT_GUIDANCE_SCALE)),
-            'smoothing_iterations': int(data.get("smoothing_iterations", cls.DEFAULT_SMOOTHING_ITERATIONS)),
-            'mesh_threshold': float(data.get("mesh_threshold", cls.DEFAULT_MESH_THRESHOLD)),
-            'preview_resolution': cls.PREVIEW_RESOLUTION,
-            'full_resolution': cls.FULL_RESOLUTION
+            'render_resolution': int(data.get("render_resolution", cls.DEFAULT_RENDER_RESOLUTION))
         }
 
 
@@ -202,10 +196,10 @@ try:
     _flush()
     from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, EulerAncestralDiscreteScheduler
     from controlnet_aux import CannyDetector
-    from trimesh.smoothing import filter_laplacian
     
-        # TripoSR imports - load from Hugging Face
+    # Import TripoSR from local directory
     import rembg
+    import numpy as np
 
     # Import optimization profiles
     try:
@@ -216,16 +210,13 @@ try:
         OPTIMIZATION_AVAILABLE = False
         logger.warning("Optimization profiles not available, using default parameters")
 
-    # Load TripoSR model from Hugging Face
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"        
-    logger.info(f"Loading TripoSR model from Hugging Face on {DEVICE} ...")
+    # Import TripoSR from local directory
+    logger.info(f"Loading TripoSR from local directory: {TRIPOSR_PATH}")
     from tsr.system import TSR
-    triposr_model = TSR.from_pretrained("stabilityai/TripoSR")
-    triposr_model.to(DEVICE)
-    triposr_model.eval()
-    logger.info("TripoSR model loaded.")
+    from tsr.utils import remove_background, resize_foreground
+    
+    # Initialize rembg session for background removal
     rembg_session = rembg.new_session()
-
     
     app = Flask(__name__);
     CORS(app)
@@ -238,7 +229,8 @@ try:
             "cpu_percent": psutil.cpu_percent(interval=None),
             "memory_percent": psutil.virtual_memory().percent,
             "models_loaded": all(hasattr(app, x) for x in ("edge_det", "cnet", "sd", "triposr")),
-            "optimization_available": OPTIMIZATION_AVAILABLE
+            "optimization_available": OPTIMIZATION_AVAILABLE,
+            "triposr_path": TRIPOSR_PATH
         })
 
     @app.route("/test", methods=["GET", "POST"])
@@ -337,42 +329,23 @@ try:
     app.sd.enable_attention_slicing()
     app.sd.enable_vae_slicing()  # Additional optimization
 
-    logger.info("Loading TripoSR …");
+    logger.info("Loading TripoSR from local directory …");
     _flush()
-    os.makedirs(os.path.join(TRIPOSR_PATH, "checkpoints"), exist_ok=True)
-    app.last_concept_image = None
-
-    def ensure_module_on_device(module, target_device):
-        """Helper function to ensure all tensors in a module are on the right device"""
-        module.to(target_device)
-        for attr_name in dir(module):
-            try:
-                attr = getattr(module, attr_name)
-                if isinstance(attr, torch.Tensor):
-                    setattr(module, attr_name, attr.to(target_device))
-                elif hasattr(attr, 'to'):
-                    attr.to(target_device)
-            except Exception:
-                continue
-        return module
-
-    # Load TripoSR on GPU with mixed precision
-    app.triposr = TSR.from_pretrained("stabilityai/TripoSR")
-
-    # Ensure everything is on the correct device
-    app.triposr = ensure_module_on_device(app.triposr, device)
+    
+    # Load TripoSR from local directory
+    app.triposr = TSR.from_pretrained(
+        "stabilityai/TripoSR",
+        config_name="config.yaml",
+        weight_name="model.ckpt"
+    )
+    
+    # Set chunk size for memory optimization
     if hasattr(app.triposr, 'renderer'):
-        app.triposr.renderer = ensure_module_on_device(app.triposr.renderer, device)
-        if hasattr(app.triposr.renderer, 'triplane'):
-            app.triposr.renderer.triplane = app.triposr.renderer.triplane.to(device)
-
-    if device == "cuda":
-        # Convert to half precision if using CUDA
-        app.triposr = app.triposr.half()
-        if hasattr(app.triposr, 'renderer'):
-            app.triposr.renderer = app.triposr.renderer.half()
-
+        app.triposr.renderer.set_chunk_size(8192)  # Optimize for memory usage
+    
+    app.triposr.to(device)
     app.triposr.eval()
+    
     logger.info(f"TripoSR loaded on {device}");
     _flush()
 
@@ -391,15 +364,15 @@ try:
                 return jsonify({"error": "Missing sketch"}), 400
 
             # Check cache first
-            cache_key = f"{data['sketch'][:100]}_{data.get('prompt', '')}_{data.get('preview', True)}"
+            cache_key = f"{data['sketch'][:100]}_{data.get('prompt', '')}"
             cached_result = result_cache.get(cache_key)
             if cached_result:
                 logger.info("Returning cached result")
                 return send_file(
                     cached_result,
                     as_attachment=True,
-                    download_name='3d_model.zip',
-                    mimetype='application/zip'
+                    download_name='3d_image.png',
+                    mimetype='image/png'
                 )
 
             # Decode input image
@@ -410,10 +383,9 @@ try:
                 return jsonify({"error": f"Bad image data: {str(e)}"}), 400
 
             prompt = data.get("prompt", "a clean 3‑D asset")
-            preview = data.get("preview", True)
 
-            # Get parameters - use optimization profile if available, otherwise default to maximum quality
-            profile_name = data.get("profile", "maximum_quality") # Default to maximum_quality
+            # Get parameters - use optimization profile if available, otherwise default to standard
+            profile_name = data.get("profile", "standard")  # Default to standard
             custom_params = data.get("custom_params", {})
 
             if OPTIMIZATION_AVAILABLE:
@@ -444,115 +416,65 @@ try:
             del edge;
             clear_gpu_memory()
 
-            # C) Scene codes - use same device as model
-            with torch.cuda.amp.autocast() if device == "cuda" else nullcontext():
-                codes = app.triposr([concept], device=device)
-                logger.info(f"Codes device: {codes.device}")
+            # C) Preprocess image for TripoSR (background removal and resizing)
+            logger.info("Preprocessing image for TripoSR...")
+            try:
+                # Remove background and resize foreground
+                processed_image = remove_background(concept, rembg_session)
+                processed_image = resize_foreground(processed_image, 0.85)
+                
+                # Convert to proper format for TripoSR
+                processed_image = np.array(processed_image).astype(np.float32) / 255.0
+                processed_image = processed_image[:, :, :3] * processed_image[:, :, 3:4] + (1 - processed_image[:, :, 3:4]) * 0.5
+                processed_image = Image.fromarray((processed_image * 255.0).astype(np.uint8))
+                
+                logger.info("Image preprocessing completed")
+            except Exception as e:
+                logger.warning(f"Background removal failed: {e}, using original image")
+                processed_image = concept
 
-                # Re-ensure renderer is on correct device
-                if hasattr(app.triposr, 'renderer'):
-                    app.triposr.renderer = ensure_module_on_device(app.triposr.renderer, codes.device)
-            clear_gpu_memory()
-
-            # D) Mesh extraction with optimized resolution
-            res = params['preview_resolution'] if preview else params['full_resolution']
+            # D) Generate scene codes using TripoSR
+            logger.info("Generating scene codes with TripoSR...")
             with torch.no_grad():
                 with torch.cuda.amp.autocast() if device == "cuda" else nullcontext():
-                    # Final device check before mesh extraction
-                    if hasattr(app.triposr, 'renderer'):
-                        app.triposr.renderer = ensure_module_on_device(app.triposr.renderer, codes.device)
-                    meshes = app.triposr.extract_mesh(codes, resolution=res, threshold=params['mesh_threshold'])
-            del codes;
+                    scene_codes = app.triposr([processed_image], device=device)
+                    logger.info(f"Scene codes generated on device: {scene_codes.device}")
             clear_gpu_memory()
 
-            # Export OBJ and texture
-            mesh = meshes[0]
+            # E) Render single 3D image
+            render_resolution = params.get('render_resolution', 512)
+            logger.info(f"Rendering 3D image with resolution {render_resolution}...")
+            
+            with torch.no_grad():
+                with torch.cuda.amp.autocast() if device == "cuda" else nullcontext():
+                    render_images = app.triposr.render(
+                        scene_codes, 
+                        n_views=1,  # Just one view
+                        height=render_resolution, 
+                        width=render_resolution,
+                        return_type="pil"
+                    )
+            del scene_codes;
+            clear_gpu_memory()
 
-            # Conditional Laplacian smoothing (only if enabled)
-            if params['smoothing_iterations'] > 0:
-                logger.info(f"Applying Laplacian smoothing to the mesh (iterations={params['smoothing_iterations']})...")
-                try:
-                    if mesh.vertices.shape[0] > 0 and mesh.faces.shape[0] > 0:
-                        filter_laplacian(mesh, iterations=params['smoothing_iterations'])
-                        logger.info("Laplacian smoothing completed successfully")
-                    else:
-                        logger.warning("Mesh is empty, skipping smoothing")
-                except Exception as e:
-                    logger.warning(f"Laplacian smoothing failed: {e}, continuing without smoothing")
-
-            # Process the mesh to fix potential issues before UV unwrapping
-            logger.info("Processing mesh to fix potential issues...")
-            try:
-                mesh.process()
-                logger.info("Mesh processing completed")
-            except Exception as e:
-                logger.warning(f"Mesh processing failed: {e}, continuing with original mesh")
-
-            # Use xatlas to generate UVs
-            import xatlas
-            import trimesh
-
-            vmapping, indices, uvs = xatlas.parametrize(mesh.vertices, mesh.faces)
-
-            # Create a new mesh with the unwrapped UVs
-            uv_mesh = trimesh.Trimesh(
-                vertices=mesh.vertices[vmapping],
-                faces=indices,
-                vertex_normals=mesh.vertex_normals[vmapping],
-                visual=trimesh.visual.TextureVisuals(uv=uvs)
-            )
-
-            # Create a texture from the concept image
-            texture = concept.resize((1024, 1024))
-
-            # Create material
-            material = trimesh.visual.material.SimpleMaterial(image=texture)
-
-            # Assign material to the mesh
-            uv_mesh.visual.material = material
-            app.last_concept_image = concept.copy()
-
-            # Export to a zip file in memory
-            import zipfile
-            zip_buffer = io.BytesIO()
-
-            # Manually export each component for robustness
-            obj_data = trimesh.exchange.obj.export_obj(uv_mesh, mtl_name="texture.mtl")
-
-            # Manually create the MTL file content as a string
-            mtl_data = f"""
-newmtl material_0
-Ka 1.000000 1.000000 1.000000
-Kd 1.000000 1.000000 1.000000
-Ks 0.000000 0.000000 0.000000
-Tr 1.000000
-illum 2
-Ns 0.000000
-map_Kd texture.png
-"""
-
-            # Save the texture image to a buffer
-            texture_buffer = io.BytesIO()
-            uv_mesh.visual.material.image.save(texture_buffer, format='PNG')
-            texture_data = texture_buffer.getvalue()
-
-            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-                zf.writestr("model.obj", obj_data)
-                zf.writestr("texture.mtl", mtl_data)
-                zf.writestr("texture.png", texture_data)
-
-            zip_buffer.seek(0)
+            # F) Get the single rendered image
+            final_image = render_images[0][0]  # First (and only) image from first batch
+            
+            # Convert to base64 for response
+            img_buffer = io.BytesIO()
+            final_image.save(img_buffer, format='PNG')
+            img_buffer.seek(0)
 
             # Cache the result
-            result_cache.put(cache_key, zip_buffer)
+            result_cache.put(cache_key, img_buffer)
 
             clear_gpu_memory();
             _flush()
             return send_file(
-                zip_buffer,
+                img_buffer,
                 as_attachment=True,
-                download_name='3d_model.zip',
-                mimetype='application/zip'
+                download_name='3d_image.png',
+                mimetype='image/png'
             )
 
         except Exception as e:
