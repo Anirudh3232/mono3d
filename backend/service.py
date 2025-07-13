@@ -218,19 +218,27 @@ try:
 
     # Load TripoSR model from Hugging Face
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"        
-    logger.info(f"Loading TripoSR model from Hugging Face on {DEVICE} ...")
-    # Import TSR from Hugging Face - using the correct import
+    logger.info(f"Loading TripoSR model locally on {DEVICE} ...")
+    
+    # Add the TripoSR directory to Python path for Colab
+    triposr_path = os.path.join(os.getcwd(), "backend", "TripoSR-main")
+    if triposr_path not in sys.path:
+        sys.path.insert(0, triposr_path)
+    
+    # Import TSR from local TripoSR files
     try:
         from tsr.system import TSR
-        triposr_model = TSR.from_pretrained("stabilityai/TripoSR")
-    except ImportError:
-        # Fallback if tsr module is not available
-        logger.warning("TSR module not found, trying alternative import...")
-        from transformers import AutoModelForCausalLM
-        triposr_model = AutoModelForCausalLM.from_pretrained("stabilityai/TripoSR")
-    triposr_model.to(DEVICE)
-    triposr_model.eval()
-    logger.info("TripoSR model loaded.")
+        logger.info("TSR module imported successfully from local files")
+        # Initialize TSR without loading from Hugging Face
+        triposr_model = TSR()
+        triposr_model.to(DEVICE)
+        triposr_model.eval()
+        logger.info("TripoSR model loaded from local files.")
+    except ImportError as e:
+        logger.error(f"Failed to import TSR module: {e}")
+        logger.error("Please ensure TripoSR-main directory is present in backend/")
+        triposr_model = None
+    
     rembg_session = rembg.new_session()
 
     
@@ -344,12 +352,14 @@ try:
     app.sd.enable_attention_slicing()
     app.sd.enable_vae_slicing()  # Additional optimization
 
-    logger.info("Loading TripoSR from Hugging Face…");
+    logger.info("Loading TripoSR locally…");
     _flush()
     app.last_concept_image = None
 
     def ensure_module_on_device(module, target_device):
         """Helper function to ensure all tensors in a module are on the right device"""
+        if module is None:
+            return None
         module.to(target_device)
         for attr_name in dir(module):
             try:
@@ -362,12 +372,13 @@ try:
                 continue
         return module
 
-    # Load TripoSR on GPU with mixed precision
-    try:
-        app.triposr = TSR.from_pretrained("stabilityai/TripoSR")
-    except NameError:
-        # If TSR is not defined, use the already loaded model
-        app.triposr = triposr_model
+    # Use the already loaded TripoSR model
+    app.triposr = triposr_model
+
+    # Check if TripoSR model was loaded successfully
+    if app.triposr is None:
+        logger.error("❌ TripoSR model failed to load. Please check the TripoSR-main directory.")
+        raise RuntimeError("TripoSR model not available")
 
     # Ensure everything is on the correct device
     app.triposr = ensure_module_on_device(app.triposr, device)
