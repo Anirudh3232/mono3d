@@ -245,6 +245,9 @@ try:
     app = Flask(__name__);
     CORS(app)
 
+    # NOTE: huggingface_hub is required as a dependency for diffusers/transformers/TripoSR, even if not downloading from Hugging Face.
+    # Make sure to install it: pip install --upgrade huggingface_hub
+
     # Helper: Check if running in Colab
     import importlib.util
 
@@ -256,7 +259,7 @@ try:
         if not os.path.exists(triposr_path) and in_colab():
             import subprocess
             print("TripoSR-main not found. Downloading from GitHub...")
-            subprocess.run(["git", "clone", "https://github.com/stabilityai/TripoSR.git", triposr_path], check=True)
+            subprocess.run(["git", "clone", "https://github.com/VAST-AI-Research/TripoSR.git", triposr_path], check=True)
             print("TripoSR-main downloaded.")
 
     # Optionally download TripoSR-main if in Colab
