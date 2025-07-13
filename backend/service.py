@@ -245,6 +245,43 @@ try:
     app = Flask(__name__);
     CORS(app)
 
+    # Helper: Check if running in Colab
+    import importlib.util
+
+    def in_colab():
+        return importlib.util.find_spec('google.colab') is not None
+
+    def download_triposr_if_needed():
+        triposr_path = os.path.join(os.getcwd(), "backend", "TripoSR-main")
+        if not os.path.exists(triposr_path) and in_colab():
+            import subprocess
+            print("TripoSR-main not found. Downloading from GitHub...")
+            subprocess.run(["git", "clone", "https://github.com/stabilityai/TripoSR.git", triposr_path], check=True)
+            print("TripoSR-main downloaded.")
+
+    # Optionally download TripoSR-main if in Colab
+    try:
+        download_triposr_if_needed()
+    except Exception as e:
+        logger.warning(f"Could not download TripoSR-main: {e}")
+
+    # Try to import TSR
+    triposr_model = None
+    try:
+        triposr_path = os.path.join(os.getcwd(), "backend", "TripoSR-main")
+        if triposr_path not in sys.path:
+            sys.path.insert(0, triposr_path)
+        from tsr.system import TSR
+        logger.info("TSR module imported successfully from local files")
+        triposr_model = TSR()
+        DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+        triposr_model.to(DEVICE)
+        triposr_model.eval()
+        logger.info("TripoSR model loaded from local files.")
+    except Exception as e:
+        logger.warning(f"TripoSR not available: {e}")
+        triposr_model = None
+
     @app.get("/health")
     def health():
         return jsonify({
@@ -252,7 +289,7 @@ try:
             "gpu_mb": gpu_mem_mb(),
             "cpu_percent": psutil.cpu_percent(interval=None),
             "memory_percent": psutil.virtual_memory().percent,
-            "models_loaded": all(hasattr(app, x) for x in ("edge_det", "cnet", "sd", "triposr")),
+            "triposr_available": triposr_model is not None,
             "optimization_available": OPTIMIZATION_AVAILABLE
         })
 
@@ -375,27 +412,30 @@ try:
     # Use the already loaded TripoSR model
     app.triposr = triposr_model
 
-    # Check if TripoSR model was loaded successfully
+    # If TripoSR is not available, disable endpoints that require it
     if app.triposr is None:
-        logger.error("❌ TripoSR model failed to load. Please check the TripoSR-main directory.")
-        raise RuntimeError("TripoSR model not available")
+        logger.warning("TripoSR is not available. /generate endpoint will return an error.")
 
-    # Ensure everything is on the correct device
-    app.triposr = ensure_module_on_device(app.triposr, device)
-    if hasattr(app.triposr, 'renderer'):
-        app.triposr.renderer = ensure_module_on_device(app.triposr.renderer, device)
-        if hasattr(app.triposr.renderer, 'triplane'):
-            app.triposr.renderer.triplane = app.triposr.renderer.triplane.to(device)
-
-    if device == "cuda":
-        # Convert to half precision if using CUDA
-        app.triposr = app.triposr.half()
+        @app.post("/generate")
+        def generate_unavailable():
+            return jsonify({"error": "TripoSR is not available. Please add backend/TripoSR-main or run in Colab to auto-download."}), 503
+    else:
+        # Ensure everything is on the correct device
+        app.triposr = ensure_module_on_device(app.triposr, device)
         if hasattr(app.triposr, 'renderer'):
-            app.triposr.renderer = app.triposr.renderer.half()
+            app.triposr.renderer = ensure_module_on_device(app.triposr.renderer, device)
+            if hasattr(app.triposr.renderer, 'triplane'):
+                app.triposr.renderer.triplane = app.triposr.renderer.triplane.to(device)
 
-    app.triposr.eval()
-    logger.info(f"TripoSR loaded on {device}");
-    _flush()
+        if device == "cuda":
+            # Convert to half precision if using CUDA
+            app.triposr = app.triposr.half()
+            if hasattr(app.triposr, 'renderer'):
+                app.triposr.renderer = app.triposr.renderer.half()
+
+        app.triposr.eval()
+        logger.info(f"TripoSR loaded on {device}");
+        _flush()
 
     logger.info("✅ Optimized models ready");
     _flush()
