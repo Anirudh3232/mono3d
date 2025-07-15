@@ -1,172 +1,100 @@
-"use client";
+'use client';
 
-import { useState } from "react";
-import { toast } from "react-hot-toast";
-
-console.log("NEXT_PUBLIC_BACKEND_ENDPOINT:", process.env.NEXT_PUBLIC_BACKEND_ENDPOINT);
+import { useState, useRef } from 'react';
+import Image from 'next/image';
 
 export default function Home() {
-  // ───────────────────────────────── state ──────────────────────────────────
-  const [image, setImage] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState(0);         // simple fake bar
-  const [prompt, setPrompt] = useState("a clean 3-D asset");
+  const [file, setFile] = useState<File | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  // ───────────────────────────── handle upload ──────────────────────────────
-  const handleSketch = async (b64: string) => {
-    setBusy(true);
-    setImage(null);
-    setProgress(0);
-
-    try {
-      const r = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sketch: b64,
-          prompt: prompt || "a clean 3-D asset"
-        })
-      });
-
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-
-      const j = await r.json();
-      if (j.error) throw new Error(j.error);
-
-      // Handle the image response
-      const blob = await r.blob();
-      const url = URL.createObjectURL(blob);
-      setImage(url);
-      setProgress(100);
-      toast.success("3-D image generated!");
-    } catch (err: any) {
-      toast.error(err?.message ?? "Generation failed");
-    } finally {
-      setBusy(false);
-    }
+  const handleFileSelect = (selectedFile: File) => {
+    setFile(selectedFile);
   };
 
-  // ─────────────────────────── download helper ──────────────────────────────
-  const downloadImage = () => {
-    if (!image) return;
-    const link = document.createElement("a");
-    link.href = image;
-    link.download = "3d_image.png";
-    link.click();
+  const handleGenerate = async () => {
+    if (!file) return;
+    setGenerating(true);
+    await new Promise(r => setTimeout(r, 2000));   //  mock API call
+    setGenerating(false);
+    console.log('Generating 3D model from uploaded file');
   };
 
-  // ─────────────────────────────────  UI  ───────────────────────────────────
   return (
-    <main className="max-w-3xl mx-auto py-10 px-4">
-      <h1 className="text-3xl font-bold mb-6">Sketch → 3-D Image Generator</h1>
+    <main className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 p-4">
+      {/* Smaller, centered card */}
+      <div className="flex flex-col lg:flex-row gap-6 bg-[#0f0f11]/95 rounded-2xl shadow-2xl p-6 md:p-8 w-full max-w-4xl items-center">
 
-      {/* prompt input */}
-      <div className="mb-6">
-        <label htmlFor="prompt" className="block text-sm font-medium mb-1">
-          Generation prompt
-        </label>
-        <input
-          id="prompt"
-          type="text"
-          value={prompt}
-          onChange={e => setPrompt(e.target.value)}
-          disabled={busy}
-          className="w-full rounded-md border px-3 py-2"
-          placeholder="Describe the style, material…"
-        />
-      </div>
-
-      {/* drag-and-drop */}
-      <div
-        className={`border-2 border-dashed rounded-xl p-8 text-center transition ${busy ? "opacity-50" : ""}`}
-        onDragOver={e => { e.preventDefault(); }}
-        onDrop={async e => {
-          e.preventDefault();
-          if (e.dataTransfer.files[0]) {
-            const file = e.dataTransfer.files[0];
-            const reader = new FileReader();
-            reader.onload = (e) => {
-              if (e.target?.result) {
-                handleSketch(e.target.result as string);
-              }
-            };
-            reader.readAsDataURL(file);
-          }
-        }}
-        onClick={() => {
-          if (!busy) {
-            const input = document.createElement('input');
-            input.type = 'file';
-            input.accept = 'image/png';
-            input.onchange = (e) => {
-              const file = (e.target as HTMLInputElement).files?.[0];
-              if (file) {
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                  if (e.target?.result) {
-                    handleSketch(e.target.result as string);
-                  }
-                };
-                reader.readAsDataURL(file);
-              }
-            };
-            input.click();
-          }
-        }}
-        style={{ cursor: busy ? "not-allowed" : "pointer" }}
-      >
-        <div className="text-center">
-          <div className="text-4xl mb-4">📷</div>
-          <div className="text-lg font-medium mb-2">Drop a PNG sketch here</div>
-          <div className="text-gray-500">(or click to select)</div>
-          <div className="text-sm text-gray-400 mt-2">
-            Upload a sketch to generate a 3D image
-          </div>
-        </div>
-      </div>
-
-      {/* prog bar */}
-      {busy && (
-        <div className="mt-4">
-          <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
-            <div
-              className="bg-blue-600 h-full transition-all"
-              style={{ width: `${progress}%` }}
-            />
-          </div>
-          <p className="mt-2 text-blue-500 animate-pulse">
-            Generating 3D image… {progress}%
-          </p>
-        </div>
-      )}
-
-      {/* results */}
-      {image && (
-        <div className="mt-6">
-          <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
-            <h3 className="text-lg font-medium text-green-800 mb-2">✅ Generation Complete!</h3>
-            <p className="text-green-700">
-              Your 3D image has been generated successfully.
+        {/* ───────── LEFT COL ───────── */}
+        <section className="w-full lg:w-1/2 space-y-6">
+          <header className="space-y-3 text-center lg:text-left">
+            <h1 className="text-3xl lg:text-4xl font-extrabold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+              2D → 3D Converter
+            </h1>
+            <p className="text-gray-400 text-base">
+              Transform your 2D images into stunning&nbsp;3D models with&nbsp;AI
             </p>
+          </header>
+
+          {/* Custom styled upload area */}
+          <div 
+            className="border-2 border-dashed border-blue-400 rounded-xl p-6 text-center cursor-pointer hover:bg-blue-400/5 transition-colors min-h-[160px] flex flex-col items-center justify-center"
+            onClick={() => inputRef.current?.click()}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              if (e.dataTransfer.files[0]) {
+                handleFileSelect(e.dataTransfer.files[0]);
+              }
+            }}
+          >
+            <input
+              ref={inputRef}
+              type="file"
+              accept="image/png,image/jpeg"
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files?.[0]) {
+                  handleFileSelect(e.target.files[0]);
+                }
+              }}
+            />
+            <div className="text-lg font-bold text-white mb-2">Drag & Drop file here</div>
+            <div className="text-gray-400 text-sm">or click to browse (PNG / JPG)</div>
+            {file && (
+              <div className="text-green-400 text-sm mt-3">
+                Selected: {file.name}
+              </div>
+            )}
           </div>
-          
-          {/* Display the generated image */}
-          <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
-            <img 
-              src={image} 
-              alt="Generated 3D image" 
-              className="w-full h-auto rounded-lg shadow-lg"
+
+          {/* generate */}
+          <button
+            onClick={handleGenerate}
+            disabled={!file || generating}
+            className="w-full h-12 text-base font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {generating ? 'Generating…' : 'Generate'}
+          </button>
+        </section>
+
+        {/* ───────── RIGHT COL ───────── */}
+        <section className="w-full lg:w-1/2 flex items-center justify-center p-4">
+          <div className="w-40 h-40 lg:w-48 lg:h-48 relative">
+            <Image
+              src="/Robo..png"
+              alt="Robot drawing"
+              fill
+              sizes="(min-width: 1024px) 192px, 160px"
+              className="object-contain rounded-xl opacity-90 select-none pointer-events-none drop-shadow-lg"
+              priority
+              onError={(e) => {
+                console.log('Image failed to load:', e);
+              }}
             />
           </div>
-          
-          <button
-            onClick={downloadImage}
-            className="rounded bg-blue-500 px-4 py-2 text-white hover:bg-blue-600 transition-colors"
-          >
-            📥 Download 3D Image
-          </button>
-        </div>
-      )}
+        </section>
+      </div>
     </main>
   );
 }
