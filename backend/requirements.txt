@@ -6,7 +6,7 @@ torchaudio==2.2.2+cu118
 -f https://download.pytorch.org/whl/torch_stable.html
 
 # ────────── Diffusers & Transformers Stack ───────────
-# Pinned to stable, compatible versions
+
 diffusers==0.27.2
 transformers==4.38.2
 accelerate==0.27.2
