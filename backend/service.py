@@ -21,8 +21,6 @@ class MockCache:
 
     def __call__(self, *args, **kwargs):
         return self
-
-    @property
     def dim(self):
         return 0
 
@@ -225,18 +223,8 @@ try:
     # Initialize rembg session for background removal
     rembg_session = rembg.new_session()
     
-    app = Flask(__name__)
-    
-    # Configure CORS for production deployment
-    CORS(app, 
-         origins=[
-             "http://localhost:3000",  # Local development
-             "https://*.vercel.app",   # Vercel deployments
-             "https://your-vercel-app.vercel.app",  # Your specific Vercel app
-             "https://mono3d.your-domain.com"  # Custom domain if you have one
-         ],
-         allow_headers=["Content-Type", "Authorization"],
-         methods=["GET", "POST", "OPTIONS"])
+    app = Flask(__name__);
+    CORS(app)
 
     @app.get("/health")
     def health():
