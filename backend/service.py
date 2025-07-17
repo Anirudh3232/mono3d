@@ -22,6 +22,10 @@ class MockCache:
     def __call__(self, *args, **kwargs):
         return self
 
+    @property
+    def dim(self):
+        return 0
+
     def update(self, *args, **kwargs):
         pass
 
