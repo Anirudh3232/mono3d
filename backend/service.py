@@ -19,6 +19,9 @@ class MockCache:
     def __init__(self, *args, **kwargs):
         pass
 
+    def __call__(self, *args, **kwargs):
+        return self
+
     def update(self, *args, **kwargs):
         pass
 
@@ -218,8 +221,18 @@ try:
     # Initialize rembg session for background removal
     rembg_session = rembg.new_session()
     
-    app = Flask(__name__);
-    CORS(app)
+    app = Flask(__name__)
+    
+    # Configure CORS for production deployment
+    CORS(app, 
+         origins=[
+             "http://localhost:3000",  # Local development
+             "https://*.vercel.app",   # Vercel deployments
+             "https://your-vercel-app.vercel.app",  # Your specific Vercel app
+             "https://mono3d.your-domain.com"  # Custom domain if you have one
+         ],
+         allow_headers=["Content-Type", "Authorization"],
+         methods=["GET", "POST", "OPTIONS"])
 
     @app.get("/health")
     def health():
@@ -332,7 +345,7 @@ try:
     logger.info("Loading TripoSR from local directory …");
     _flush()
     
-    # Load TripoSR from local directory
+    # Load TripoSR from HuggingFace
     app.triposr = TSR.from_pretrained(
         "stabilityai/TripoSR",
         config_name="config.yaml",
