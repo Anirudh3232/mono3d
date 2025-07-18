@@ -23,7 +23,12 @@ class MockCache:
         return None  # Return None to avoid injecting dummy data
 
     def __getattr__(self, name):
-        return lambda *args, **kwargs: None  # Return no-op for missing methods
+        # Return a callable that returns None for any method/attribute access
+        def mock_method(*args, **kwargs):
+            return None
+        # Make the mock method also support attribute access
+        mock_method.__getattr__ = lambda x: mock_method
+        return mock_method
 
     def size(self, dim=None):
         return (0,) if dim is None else 0
