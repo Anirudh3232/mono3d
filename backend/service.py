@@ -17,12 +17,23 @@ sys.path.insert(0, TRIPOSR_PATH)
 
 class MockCache:
     def __init__(self, *args, **kwargs):
-        pass
+        self.shape = (1, 1)  # Default 2D shape to avoid dimension errors
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     def __call__(self, *args, **kwargs):
         return self
+
     def dim(self):
-        return 0
+        return 2  # Return 2 dimensions to satisfy minimum requirements
+
+    def size(self, dim=None):
+        if dim is None:
+            return self.shape
+        return self.shape[dim] if dim < len(self.shape) else 1
+
+    def to(self, device):
+        self.device = device
+        return self
 
     def update(self, *args, **kwargs):
         pass
