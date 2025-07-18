@@ -22,6 +22,9 @@ class MockCache:
     def __call__(self, *args, **kwargs):
         return None  # Return None to avoid injecting dummy data
 
+    def dim(self):
+        return 0
+    
     def __getattr__(self, name):
         # Return a callable that returns None for any method/attribute access
         def mock_method(*args, **kwargs):
