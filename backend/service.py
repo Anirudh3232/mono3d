@@ -17,29 +17,22 @@ sys.path.insert(0, TRIPOSR_PATH)
 
 class MockCache:
     def __init__(self, *args, **kwargs):
-        # Create a minimal dummy tensor to avoid type errors
-        self._tensor = torch.zeros((2, 512, 1, 1), device='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float16)
-        self.shape = (2, 512, 1, 1)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     def __call__(self, *args, **kwargs):
-        return self._tensor  # Return actual tensor when called
+        return None  # Return None to avoid injecting dummy data
 
     def __getattr__(self, name):
-        # Delegate any missing attributes to the dummy tensor
-        return getattr(self._tensor, name)
+        return lambda *args, **kwargs: None  # Return no-op for missing methods
 
     def dim(self):
-        return 4
+        return 0
 
     def size(self, dim=None):
-        if dim is None:
-            return self.shape
-        return self.shape[dim] if dim < len(self.shape) else 1
+        return (0,) if dim is None else 0
 
     def to(self, device):
         self.device = device
-        self._tensor = self._tensor.to(device)
         return self
 
     def update(self, *args, **kwargs):
