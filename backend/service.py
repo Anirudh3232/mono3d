@@ -17,14 +17,20 @@ sys.path.insert(0, TRIPOSR_PATH)
 
 class MockCache:
     def __init__(self, *args, **kwargs):
-        self.shape = (1, 1)  # Default 2D shape to avoid dimension errors
+        # Create a minimal dummy tensor to avoid type errors
+        self._tensor = torch.zeros((1, 1), device='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float16)
+        self.shape = (1, 1)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     def __call__(self, *args, **kwargs):
-        return self
+        return self._tensor  # Return actual tensor when called
+
+    def __getattr__(self, name):
+        # Delegate any missing attributes to the dummy tensor
+        return getattr(self._tensor, name)
 
     def dim(self):
-        return 2  # Return 2 dimensions to satisfy minimum requirements
+        return 2
 
     def size(self, dim=None):
         if dim is None:
@@ -33,6 +39,7 @@ class MockCache:
 
     def to(self, device):
         self.device = device
+        self._tensor = self._tensor.to(device)
         return self
 
     def update(self, *args, **kwargs):
