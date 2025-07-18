@@ -25,9 +25,6 @@ class MockCache:
     def __getattr__(self, name):
         return lambda *args, **kwargs: None  # Return no-op for missing methods
 
-    def dim(self):
-        return 0
-
     def size(self, dim=None):
         return (0,) if dim is None else 0
 
