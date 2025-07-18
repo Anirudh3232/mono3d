@@ -1,7 +1,7 @@
 from typing import Tuple, Optional, Callable
 import os, sys, io, time, gc, base64, logging, atexit, importlib
 import psutil, torch, numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter, ImageStat
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from functools import wraps
@@ -77,13 +77,27 @@ def clear_gpu():
         if clear_gpu.c==0: gc.collect()
 def gpu_mb(): return torch.cuda.memory_allocated()/1024**2 if torch.cuda.is_available() else 0
 
+def _best_view(imgs):
+    """pick the sharpest image using variance-of-Laplacian"""
+    def sharp(pil):
+        lap = pil.convert("L").filter(ImageFilter.FIND_EDGES)
+        return ImageStat.Stat(lap).var[0]
+    scores=[sharp(i) for i in imgs]
+    return imgs[int(np.argmax(scores))]
+
 class OptimizedParameters:
-    DEFAULTS=dict(num_inference_steps=30,guidance_scale=7.5,render_resolution=512)
+    DEFAULTS=dict(num_inference_steps=63,   # ← high-quality floor
+                  guidance_scale=9.96,
+                  render_resolution=512)
     @classmethod
     def parse(cls,data):
         p=dict(cls.DEFAULTS)
-        p.update({k:type(v)(data.get(k,v)) for k,v in cls.DEFAULTS.items()})
+        # allow override but never go below defaults
+        for k,v in cls.DEFAULTS.items():
+            if k in data:
+                p[k]=max(type(v)(data[k]),v)
         return p
+
 class LRU:
     def __init__(self,n=10): self.m,self.o,self.n={},[],n
     def get(self,k):
@@ -98,9 +112,9 @@ cache=LRU()
 print("Initializing service …")
 from diffusers import StableDiffusionControlNetPipeline,ControlNetModel,EulerAncestralDiscreteScheduler
 from controlnet_aux import CannyDetector
-import rembg, numpy as np
+import rembg
 try:
-    from optimization_config import get_profile_parameters,list_profiles,get_recommended_profile
+    from optimization_config import get_profile_parameters
     OPT=True
 except ImportError:
     OPT=False
@@ -155,7 +169,7 @@ def generate():
         if c: return send_file(c,as_attachment=True,download_name="3d.png",mimetype="image/png")
 
         png=base64.b64decode(d["sketch"].split(",",1)[1])
-        pil=Image.open(io.BytesIO(png)).convert("RGBA")
+        pil=Image.open(io.BytesIO(png)).convert("RGBA").resize((768,768),Image.LANCZOS)
         prompt=d.get("prompt","a clean 3-D asset")
         params=(get_profile_parameters(d.get("profile","standard"),d.get("custom_params",{}))
                 if OPT else OptimizedParameters.parse(d))
@@ -169,21 +183,21 @@ def generate():
 
         try:
             proc=remove_background(concept,rembg_sess)
-            proc=resize_foreground(proc,0.85)
+            proc=resize_foreground(proc,1.0)  # keep full silhouette
             arr=np.asarray(proc).astype(np.float32)/255
             arr=arr[:,:,:3]*arr[:,:,3:4]+(1-arr[:,:,3:4])*0.5
             proc=Image.fromarray((arr*255).astype(np.uint8))
         except Exception: proc=concept
 
-        with torch.no_grad():
-            with torch.cuda.amp.autocast() if device=="cuda" else nullcontext():
-                scene=app.tsr([proc],device=device)
+        with torch.no_grad(), (torch.cuda.amp.autocast() if device=="cuda" else nullcontext()):
+            scene=app.tsr([proc],device=device)
         clear_gpu()
 
         h=params['render_resolution']
-        with torch.no_grad():
-            with torch.cuda.amp.autocast() if device=="cuda" else nullcontext():
-                img=app.tsr.render(scene,n_views=1,height=h,width=h,return_type="pil")[0][0]
+        with torch.no_grad(), (torch.cuda.amp.autocast() if device=="cuda" else nullcontext()):
+            views=app.tsr.render(scene,n_views=4,height=h,width=h,return_type="pil")[0]
+        img=_best_view(views)
+
         buf=io.BytesIO(); img.save(buf,format="PNG"); buf.seek(0)
         cache.put(key,buf); clear_gpu(); _flush()
         return send_file(buf,as_attachment=True,download_name="3d_image.png",mimetype="image/png")
