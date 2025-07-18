@@ -9,12 +9,12 @@ diffusers==0.27.2
 transformers==4.38.2
 accelerate==0.27.2
 controlnet-aux==0.0.7
-huggingface_hub==0.28.0
+huggingface_hub==0.19.4 
 einops==0.7.0
 omegaconf==2.3.0
 timm==0.9.16
 
- 
+# TripoSR & image utils 
 
 numpy>=1.23,<1.27
 Pillow>=9.5,<11.0.0
