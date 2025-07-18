@@ -14,8 +14,8 @@ einops==0.7.0
 omegaconf==2.3.0
 timm==0.9.16
 
-# TripoSR & image utils 
-git+https://github.com/VAST-AI-Research/TripoSR.git
+ 
+
 numpy>=1.23,<1.27
 Pillow>=9.5,<11.0.0
 imageio==2.34.0
