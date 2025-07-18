@@ -5,7 +5,7 @@ torchaudio==2.2.2+cu118
 -f https://download.pytorch.org/whl/torch_stable.html
 
 # Diffusion stack 
-diffusers==0.27.2
+diffusers==0.26.3
 transformers==4.38.2
 accelerate==0.27.2
 controlnet-aux==0.0.7
