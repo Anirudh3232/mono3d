@@ -18,8 +18,8 @@ sys.path.insert(0, TRIPOSR_PATH)
 class MockCache:
     def __init__(self, *args, **kwargs):
         # Create a minimal dummy tensor to avoid type errors
-        self._tensor = torch.zeros((1, 32, 1, 1), device='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float16)
-        self.shape = (1, 32, 1, 1)
+        self._tensor = torch.zeros((2, 32, 1, 1), device='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float16)
+        self.shape = (2, 32, 1, 1)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     def __call__(self, *args, **kwargs):
