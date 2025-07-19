@@ -1,6 +1,10 @@
 
 # -----------------------------  PyTorch / CUDA  -----------------------------
 # CUDA 11.8 wheels; keep the --find-links line **directly after** the torch pkgs
+
+# ───────── 3-D utilities ─────────
+torchmcubes==0.1.5           # wheel built for torch ≥ 2.1
+
 torch==2.1.0+cu118
 torchvision==0.16.0+cu118
 torchaudio==2.1.0+cu118
