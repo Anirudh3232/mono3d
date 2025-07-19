@@ -1,55 +1,48 @@
-###############################################################################
-# ----------------  PyTorch / CUDA 11.8  – keep --find-links first ------------#
---find-links https://download.pytorch.org/whl/torch_stable.html
+# Tested working versions for Google Colab
 torch==2.1.0+cu118
 torchvision==0.16.0+cu118
 torchaudio==2.1.0+cu118
-###############################################################################
+--find-links https://download.pytorch.org/whl/torch_stable.html
 
-# --------------------------  Core ML / Diffusion stack  --------------------- #
-transformers==4.33.0          # JAX-free; tested on Colab Py3.11
+# Core ML stack - updated for compatibility
+transformers==4.33.0
 diffusers==0.21.4
-accelerate==0.20.3
+accelerate==0.21.0
 huggingface_hub==0.17.0
 tokenizers==0.13.3
 safetensors==0.3.3
+regex==2023.6.3
 
-# -------------------------------  ControlNet  ------------------------------- #
-controlnet-aux==0.0.7         # pulls scikit-image & opencv-python-headless
+# ControlNet
+controlnet-aux==0.0.7
 
-# --------------------------  Math / Imaging basics  ------------------------- #
-numpy>=1.26,<1.27             # matches Torch 2.1 ABI
+# Core dependencies - Fixed NumPy for binary compatibility
+numpy>=1.21.0,<1.25.0
 Pillow==9.5.0
 scipy==1.10.1
 einops==0.6.1
 omegaconf==2.3.0
-imageio==2.31.1
 
-# ---------------------------  TripoSR & 3-D stack  -------------------------- #
+# TripoSR specific - Multiple marching cubes options
 trimesh==3.22.4
-xatlas==0.0.10
-PyMCubes==0.1.4               # pure-Python marching-cubes fallback
-# CUDA kernel (optional – compile yourself)
-# git+https://github.com/tatsy/torchmcubes.git
+imageio==2.31.1
+scikit-image==0.20.0
 
-# --------------------------  Background removal  ---------------------------- #
-rembg==2.0.50                 # pulls onnxruntime==1.22.1 on Colab
-onnxruntime>=1.16.0,<2.0.0
+# Optional marching cubes implementations (fallbacks)
+PyMCubes==0.1.6
 
-# ------------------------------  Computer Vision ---------------------------- #
-opencv-python-headless>=4.7.0
+# Background removal
+rembg==2.0.50
 
-# ------------------------------  Web server  -------------------------------- #
+# Computer Vision - REQUIRED for sharpest() function
+opencv-python==4.8.0.76
+
+# Web server
 Flask==2.3.2
 Flask-Cors==4.0.0
 
-# --------------------------  System / Monitoring  --------------------------- #
+# System monitoring
 psutil==5.9.5
 
-# -----------------------------  HTTP utilities  ----------------------------- #
-requests==2.32.3              # matches base Colab image
-
-###############################################################################
-# Optional: enable Gradio demo UI
-# gradio>=4.27,<4.38
-###############################################################################
+# HTTP requests
+requests==2.31.0
