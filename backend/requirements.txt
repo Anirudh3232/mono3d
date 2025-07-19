@@ -1,39 +1,60 @@
-# Tested working versions for Google Colab
+
+# -----------------------------  PyTorch / CUDA  -----------------------------
+# CUDA 11.8 wheels; keep the --find-links line **directly after** the torch pkgs
 torch==2.1.0+cu118
 torchvision==0.16.0+cu118
 torchaudio==2.1.0+cu118
 --find-links https://download.pytorch.org/whl/torch_stable.html
 
-# Core ML stack - these versions work together
-transformers==4.30.2
-diffusers==0.21.4
+
+# -----------------------------  Core ML stack  ------------------------------
+transformers==4.30.2          # needs tokenizers >= 0.13.3
+diffusers==0.21.4             # needs huggingface-hub >= 0.14.1
 accelerate==0.20.3
-huggingface_hub==0.16.4
+huggingface_hub==0.16.4       # 0.27.2 never existed → use 0.16.4 (has cached_download)
 tokenizers==0.13.3
+safetensors>=0.3.1,<0.6       # required by diffusers ≥ 0.21
 
-# ControlNet
-controlnet-aux==0.0.7
+# ------------------------------  ControlNet  --------------------------------
+controlnet-aux==0.0.7         # pulls scikit-image / opencv below
 
-# Core dependencies
-numpy==1.24.3
+
+# ----------------------------  Math & Images  -------------------------------
+numpy==1.24.3                 # pinned to match manylinux wheels on Colab
 Pillow==9.5.0
 scipy==1.10.1
 einops==0.6.1
 omegaconf==2.3.0
-
-# TripoSR specific
-trimesh==3.22.4
 imageio==2.31.1
 
-# Background removal
-rembg==2.0.50
 
-# Web server
+# ---------------------------  TripoSR / 3-D stack  ---------------------------
+trimesh==3.22.4
+# Optional but usually used with TripoSR pipelines:
+xatlas==0.0.10
+PyMCubes==0.1.4
+git+https://github.com/tatsy/torchmcubes.git
+
+###############################################################################
+# --------------------------  Background removal  ----------------------------
+rembg==2.0.50                 # pulls onnxruntime
+onnxruntime>=1.16.0,<2.0.0
+
+
+# ---------------------------  API / Web server  -----------------------------
 Flask==2.3.2
 Flask-Cors==4.0.0
 
-# System monitoring
+
+# -------------------------  System & Monitoring  ----------------------------
 psutil==5.9.5
 
-# HTTP requests
-requests==2.31.0 
+
+# --------------------------  Utility / Requests  ----------------------------
+requests==2.31.0
+opencv-python-headless>=4.7.0  # controlnet-aux needs cv2; headless avoids GUI libs
+scikit-image>=0.20.0           # pulled by controlnet-aux but pinned for wheel avail.
+
+
+# ----------------------------  (Optional) Gradio  ---------------------------
+# gradio>=4.27,<4.38           # uncomment if you want the demo UI
