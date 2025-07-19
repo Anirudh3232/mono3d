@@ -4,7 +4,7 @@ torchvision==0.16.0+cu118
 torchaudio==2.1.0+cu118
 --find-links https://download.pytorch.org/whl/torch_stable.html
 
-# Core ML stack - updated for compatibility
+# Core ML stack - JAX-free versions
 transformers==4.33.0
 diffusers==0.21.4
 accelerate==0.21.0
@@ -13,36 +13,36 @@ tokenizers==0.13.3
 safetensors==0.3.3
 regex==2023.6.3
 
-# ControlNet
+# ControlNet - JAX-free
 controlnet-aux==0.0.7
 
-# Core dependencies - Fixed NumPy for binary compatibility
+# Core dependencies - No JAX
 numpy>=1.21.0,<1.25.0
 Pillow==9.5.0
 scipy==1.10.1
 einops==0.6.1
 omegaconf==2.3.0
 
-# TripoSR specific - Multiple marching cubes options
+# TripoSR specific - PyTorch only
 trimesh==3.22.4
 imageio==2.31.1
 scikit-image==0.20.0
 
-# Optional marching cubes implementations (fallbacks)
+# Optional marching cubes - Pure Python/C++
 PyMCubes==0.1.6
 
-# Background removal
+# Background removal - No JAX dependencies
 rembg==2.0.50
 
-# Computer Vision - REQUIRED for sharpest() function
+# Computer Vision - OpenCV only
 opencv-python==4.8.0.76
 
-# Web server
+# Web server - Pure Python
 Flask==2.3.2
 Flask-Cors==4.0.0
 
-# System monitoring
+# System monitoring - No JAX
 psutil==5.9.5
 
-# HTTP requests
+# HTTP requests - Standard library extensions
 requests==2.31.0
