@@ -16,14 +16,14 @@ regex==2023.6.3
 # ControlNet
 controlnet-aux==0.0.7
 
-# Core dependencies
-numpy==1.24.3
+# Core dependencies - FIXED NUMPY VERSION
+numpy>=1.21.0,<1.25.0
 Pillow==9.5.0
 scipy==1.10.1
 einops==0.6.1
 omegaconf==2.3.0
 
-# TripoSR specific (TripoSR itself is in backend folder)
+# TripoSR specific
 trimesh==3.22.4
 imageio==2.31.1
 PyMCubes==0.1.6
@@ -31,7 +31,7 @@ PyMCubes==0.1.6
 # Background removal
 rembg==2.0.50
 
-# Computer Vision - REQUIRED for sharpest() function
+# Computer Vision
 opencv-python==4.8.0.76
 
 # Web server
