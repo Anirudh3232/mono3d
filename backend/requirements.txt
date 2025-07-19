@@ -1,5 +1,5 @@
 ###############################################################################
-# --------------  PyTorch / CUDA 11.8  – keep the --find-links line ---------- #
+# -----------------  PyTorch / CUDA 11.8  – keep the --find-links ------------ #
 --find-links https://download.pytorch.org/whl/torch_stable.html
 torch==2.1.0+cu118
 torchvision==0.16.0+cu118
@@ -28,10 +28,9 @@ imageio==2.31.1
 # ---------------------------  TripoSR & 3-D stack  --------------------------- #
 trimesh==3.22.4
 xatlas==0.0.10
-PyMCubes==0.1.4
-
-# CUDA-accelerated marching-cubes kernel (builds against the torch above)
-git+https://github.com/tatsy/torchmcubes.git
+PyMCubes==0.1.4               # pure-Python marching-cubes fallback
+# CUDA kernel (optional – compile yourself)
+# git+https://github.com/tatsy/torchmcubes.git
 
 # --------------------------  Background removal  ---------------------------- #
 rembg==2.0.50                 # pulls onnxruntime
@@ -45,11 +44,9 @@ Flask-Cors==4.0.0
 psutil==5.9.5
 
 # -----------------------------  HTTP utilities  ----------------------------- #
-requests==2.31.0
-opencv-python-headless>=4.7.0  # cv2 without GUI libs
-scikit-image>=0.20.0           # already required by controlnet-aux
+requests==2.32.3              # satisfies google-colab base image
+opencv-python-headless>=4.7.0
+scikit-image>=0.20.0
 
-###############################################################################
-# Optional – uncomment if you want the Gradio demo UI
-# gradio>=4.27,<4.38
-###############################################################################
+
+
