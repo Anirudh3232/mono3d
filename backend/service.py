@@ -14,100 +14,138 @@ from flask_cors import CORS
 TRIPOSR_PATH = os.path.join(os.path.dirname(__file__), "TripoSR-main")
 sys.path.insert(0, TRIPOSR_PATH)
 
+# ───────────────────────────────────────────────────────────────
+# Disable the CUDA-only torchmcubes extension so TripoSR falls
+# back to pure-Python PyMCubes (already in requirements.txt)
+# ───────────────────────────────────────────────────────────────
+os.environ["TSR_DISABLE_TORCHMCUBES"] = "1"
+
 # ── logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("service.log")]
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("service.log")
+    ],
 )
 log = logging.getLogger(__name__)
 atexit.register(lambda: (sys.stdout.flush(), sys.stderr.flush()))
 
-# ── timing decorator
+# ── timing decorator ----------------------------------------------------------
 def timing(fn):
     @wraps(fn)
     def wrap(*a, **k):
-        s, cpu0 = time.time(), psutil.cpu_percent(None)
-        r = fn(*a, **k)
-        e, cpu1 = time.time(), psutil.cpu_percent(None)
-        log.info(f"{fn.__name__}: {e-s:.2f}s | CPU {cpu0:.1f}%→{cpu1:.1f}%")
-        return r
+        start, cpu0 = time.time(), psutil.cpu_percent(None)
+        result = fn(*a, **k)
+        end, cpu1 = time.time(), psutil.cpu_percent(None)
+        log.info(f"{fn.__name__}: {end - start:.2f}s | CPU {cpu0:.1f}%→{cpu1:.1f}%")
+        return result
     return wrap
 
-# ── tiny LRU (cache last 10 requests)
+# ── tiny LRU (cache last 10 responses) ----------------------------------------
 class LRU:
-    def __init__(self, n=10): self.n, self.d, self.o = n, {}, []
+    def __init__(self, n=10):
+        self.n, self.d, self.o = n, {}, []
+
     def get(self, k):
         if k in self.d:
-            self.o.remove(k); self.o.append(k)
+            self.o.remove(k)
+            self.o.append(k)
             return self.d[k]
+
     def put(self, k, v):
         if len(self.d) >= self.n:
             del self.d[self.o.pop(0)]
-        self.d[k] = v; self.o.append(k)
+        self.d[k] = v
+        self.o.append(k)
+
 
 cache = LRU()
 
-# ── clear CUDA
+# ── clear CUDA memory ---------------------------------------------------------
 def clear_gpu():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         gc.collect()
 
-# ── model loading
+# ── model loading -------------------------------------------------------------
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 log.info(f"▶ loading models on {DEVICE}")
 
-from diffusers import (StableDiffusionControlNetPipeline,
-                       ControlNetModel, EulerAncestralDiscreteScheduler)
+from diffusers import (
+    StableDiffusionControlNetPipeline,
+    ControlNetModel,
+    EulerAncestralDiscreteScheduler,
+)
 from controlnet_aux import CannyDetector
 from tsr.system import TSR
-from tsr.utils  import resize_foreground, remove_background
+from tsr.utils import resize_foreground, remove_background  # noqa: F401 (remove_background unused here)
 
 edge_det = CannyDetector()
+
 cnet = ControlNetModel.from_pretrained(
-    "lllyasviel/sd-controlnet-canny",
-    torch_dtype=torch.float16).to(DEVICE)
+    "lllyasviel/sd-controlnet-canny", torch_dtype=torch.float16
+).to(DEVICE)
+
 sd = StableDiffusionControlNetPipeline.from_pretrained(
     "runwayml/stable-diffusion-v1-5",
     controlnet=cnet,
-    torch_dtype=torch.float16).to(DEVICE)
+    torch_dtype=torch.float16,
+).to(DEVICE)
 sd.scheduler = EulerAncestralDiscreteScheduler.from_config(sd.scheduler.config)
-try: sd.enable_xformers_memory_efficient_attention()
-except Exception: log.warning("xformers not available")
+try:
+    sd.enable_xformers_memory_efficient_attention()
+except Exception:
+    log.warning("xformers not available")
 sd.enable_model_cpu_offload()
 sd.enable_attention_slicing()
 
 tsr = TSR.from_pretrained(
     "stabilityai/TripoSR",
     config_name="config.yaml",
-    weight_name="model.ckpt").to(DEVICE).eval()
-if hasattr(tsr, "renderer"): tsr.renderer.set_chunk_size(8192)
+    weight_name="model.ckpt",
+).to(DEVICE).eval()
+if hasattr(tsr, "renderer"):
+    tsr.renderer.set_chunk_size(8192)
 
 log.info("✔ models ready")
 
-# ── Flask app
+# ── Flask app -----------------------------------------------------------------
 app = Flask(__name__)
 CORS(app)
 
+
 @app.get("/health")
 def health():
-    return jsonify(dict(
-        status="ok",
-        gpu_mb=torch.cuda.memory_allocated()/1024**2 if torch.cuda.is_available() else 0,
-        cpu=psutil.cpu_percent(None),
-        mem=psutil.virtual_memory().percent
-    ))
+    """Simple health-check endpoint."""
+    return jsonify(
+        dict(
+            status="ok",
+            gpu_mb=(
+                torch.cuda.memory_allocated() / 1024**2
+                if torch.cuda.is_available()
+                else 0
+            ),
+            cpu=psutil.cpu_percent(None),
+            mem=psutil.virtual_memory().percent,
+        )
+    )
 
-# ── helper: pick sharpest view
+
+# ── helper: pick sharpest image ----------------------------------------------
 def sharpest(img_list):
-    """Return image with highest Laplacian variance."""
+    """Return the PIL image with highest Laplacian variance."""
     import cv2
-    scores = [cv2.Laplacian(cv2.cvtColor(np.array(i), cv2.COLOR_RGBA2GRAY),
-                            cv2.CV_64F).var() for i in img_list]
+
+    scores = [
+        cv2.Laplacian(cv2.cvtColor(np.array(i), cv2.COLOR_RGBA2GRAY), cv2.CV_64F).var()
+        for i in img_list
+    ]
     return img_list[int(np.argmax(scores))]
 
-# ── /generate
+
+# ── /generate -----------------------------------------------------------------
 @app.post("/generate")
 @timing
 def generate():
@@ -119,54 +157,65 @@ def generate():
 
     # cache key
     key = data["sketch"][:120] + data.get("prompt", "")
-    if (buf := cache.get(key)):
-        return send_file(buf, mimetype="image/png",
-                         download_name="3d_image.png", as_attachment=True)
+    if (buf := cache.get(key)) is not None:
+        return send_file(
+            buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True
+        )
 
     # decode PNG → PIL
     try:
-        png = base64.b64decode(data["sketch"].split(",", 1)[1])
-        sketch = Image.open(io.BytesIO(png)).convert("RGBA")
+        png_bytes = base64.b64decode(data["sketch"].split(",", 1)[1])
+        sketch = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
     except Exception as e:
         return jsonify(error=f"bad image data: {e}"), 400
 
     prompt = data.get("prompt", "a clean 3-D asset")
 
-    # 1) edges
-    edge = edge_det(sketch); del sketch
+    # 1) edge map
+    edge = edge_det(sketch)
+    del sketch
 
-    # 2) SD-ControlNet  (63 steps, 9.96 guidance = original repo defaults)
+    # 2) SD-ControlNet (63 steps, guidance 9.96 – repo defaults)
     with torch.no_grad():
         concept = sd(
             prompt,
             image=edge,
             num_inference_steps=63,
-            guidance_scale=9.96
+            guidance_scale=9.96,
         ).images[0]
     clear_gpu()
 
-    # 3) foreground resize (1.0 = keep original)
+    # 3) foreground resize (1.0 keeps original size)
     concept = resize_foreground(concept, 1.0)
 
     # 4) TripoSR → scene codes
-    with torch.no_grad(), (torch.cuda.amp.autocast()
-                           if DEVICE == "cuda" else nullcontext()):
+    with torch.no_grad(), (
+        torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext()
+    ):
         codes = tsr([concept], device=DEVICE)
     clear_gpu()
 
     # 5) render four views, choose sharpest
-    with torch.no_grad(), (torch.cuda.amp.autocast()
-                           if DEVICE == "cuda" else nullcontext()):
-        views = tsr.render(codes, n_views=4, height=512, width=512,
-                           return_type="pil")[0]
-    img = sharpest(views)     # pick best
-    buf = io.BytesIO(); img.save(buf, "PNG"); buf.seek(0)
+    with torch.no_grad(), (
+        torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext()
+    ):
+        views = tsr.render(
+            codes, n_views=4, height=512, width=512, return_type="pil"
+        )[0]
+    img = sharpest(views)
+
+    # save to buffer
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    buf.seek(0)
 
     cache.put(key, buf)
     clear_gpu()
-    return send_file(buf, mimetype="image/png",
-                     download_name="3d_image.png", as_attachment=True)
+    return send_file(
+        buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True
+    )
 
-# ── main
+
+# ── main ----------------------------------------------------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
