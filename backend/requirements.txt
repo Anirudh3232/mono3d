@@ -1,54 +1,32 @@
-###############################################################################
-# ----------------  PyTorch / CUDA 11.8  – keep the --find-links ------------- #
---find-links https://download.pytorch.org/whl/torch_stable.html
-torch==2.1.0+cu118
-torchvision==0.16.0+cu118
-torchaudio==2.1.0+cu118
-###############################################################################
+# Core (PyTorch + CUDA 11.8) 
+torch==2.2.2+cu118
+torchvision==0.17.2+cu118
+torchaudio==2.2.2+cu118
+-f https://download.pytorch.org/whl/torch_stable.html
 
-# ---------------------------  Core ML / Diffusion --------------------------- #
-transformers==4.30.2          # JAX-free PyTorch build
-diffusers==0.21.4
-accelerate==0.20.3
-huggingface_hub==0.16.4       # provides cached_download
-tokenizers==0.13.3
-safetensors>=0.3.1,<0.6        # compatible with diffusers-0.21
-
-# -------------------------------- ControlNet -------------------------------- #
-controlnet-aux==0.0.7         # pulls scikit-image & opencv-python-headless
-
-# -------------------------  Math / Imaging basics -------------------------- #
-numpy==1.24.3                 # manylinux-friendly for Colab
-scipy==1.10.1
-Pillow==9.5.0
-einops==0.6.1
+# Diffusion stack 
+diffusers==0.24.0
+transformers==4.35.0
+accelerate==0.24.1
+controlnet-aux==0.0.7
+huggingface_hub==0.19.4 
+einops==0.7.0
 omegaconf==2.3.0
-imageio==2.31.1
+timm==0.9.16
 
-# -----------------------  TripoSR & 3-D / Marching cubes -------------------- #
-trimesh==3.22.4
-xatlas==0.0.10
-PyMCubes==0.1.4               # pure-Python fallback
-# GPU kernel (optional – uncomment to compile on first run)
-# git+https://github.com/tatsy/torchmcubes.git
+# TripoSR & image utils 
+PyMCubes==0.1.4
+git+https://github.com/tatsy/torchmcubes.git
+trimesh==4.4.0
+rembg>=2.0.53,<3.0.0
+scipy>=1.10.0,<1.12.0
 
-# ------------------------  Background / Matting utils ---------------------- #
-rembg==2.0.50                 # pulls onnxruntime
-onnxruntime>=1.16.0,<2.0.0
+numpy>=1.23,<1.27
+Pillow>=9.5,<11.0.0
+imageio==2.34.0
 
-# ------------------------------  Web server -------------------------------- #
-Flask==2.3.2
-Flask-Cors==4.0.0
-
-# ----------------------------  Monitoring ---------------------------------- #
-psutil==5.9.5
-
-# ---------------------------  HTTP / Misc ---------------------------------- #
-requests==2.32.3              # matches Colab base image
-opencv-python-headless>=4.7.0
-scikit-image>=0.20.0
-
-###############################################################################
-# Optional – local demo UI
-# gradio>=4.27,<4.38
-###############################################################################
+#  API server & monitoring 
+Flask==3.0.3
+Flask-Cors==4.0.1
+psutil>=5.9,<6.0
+requests>=2.31,<3.0
