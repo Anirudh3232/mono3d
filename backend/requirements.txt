@@ -43,6 +43,3 @@ psutil==5.9.5
 
 # HTTP requests
 requests==2.31.0
-
-# Memory optimization
-xformers==0.0.21
