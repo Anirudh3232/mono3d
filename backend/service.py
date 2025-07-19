@@ -14,8 +14,39 @@ from flask_cors import CORS
 TRIPOSR_PATH = os.path.join(os.path.dirname(__file__), "TripoSR-main")
 sys.path.insert(0, TRIPOSR_PATH)
 
-# ── *Disable* CUDA-only torchmcubes: TripoSR will fall back to PyMCubes ─────
+# ── *Disable* CUDA-only torchmcubes (TripoSR will fall back to PyMCubes) ─────
 os.environ["TSR_DISABLE_TORCHMCUBES"] = "1"
+
+###############################################################################
+### BEGIN STUB – provide a fake torchmcubes that wraps pure-Python PyMCubes ###
+###############################################################################
+try:
+    import torchmcubes  # noqa: F401  ← already available? great, nothing to do
+except ModuleNotFoundError:
+    import types, PyMCubes, numpy as _np, torch as _torch
+
+    def _marching_cubes(vol: _torch.Tensor, thresh: float = 0.0):
+        """
+        Pure-Python fallback for marching-cubes.
+
+        Args
+        ----
+        vol : (D,H,W) float32 torch.Tensor  (on *any* device)
+        thresh : isovalue (same as torchmcubes API)
+        Returns
+        -------
+        verts, faces : torch.Tensor on the *same* device as input
+        """
+        v, f = PyMCubes.marching_cubes(vol.detach().cpu().numpy(), thresh)
+        return (_torch.from_numpy(v).to(vol.device, dtype=vol.dtype),
+                _torch.from_numpy(f.astype(_np.int64)).to(vol.device))
+
+    stub = types.ModuleType("torchmcubes")
+    stub.marching_cubes = _marching_cubes
+    sys.modules["torchmcubes"] = stub          # make importable by TripoSR
+###############################################################################
+### END STUB ##################################################################
+###############################################################################
 
 # ── logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -33,7 +64,7 @@ def timing(fn):
         t0, cpu0 = time.time(), psutil.cpu_percent(None)
         out = fn(*a, **k)
         t1, cpu1 = time.time(), psutil.cpu_percent(None)
-        log.info(f"{fn.__name__}: {t1-t0:.2f}s | CPU {cpu0:.1f}%→{cpu1:.1f}%")
+        log.info(f"{fn.__name__}: {t1 - t0:.2f}s | CPU {cpu0:.1f}%→{cpu1:.1f}%")
         return out
     return wrap
 
