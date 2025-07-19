@@ -7,10 +7,10 @@ torchaudio==2.1.0+cu118
 ###############################################################################
 
 # --------------------------  Core ML / Diffusion stack  --------------------- #
-transformers==4.30.2          # needs tokenizers >= 0.13.3
-diffusers==0.21.4             # needs huggingface-hub >= 0.14.1
+transformers==4.30.2          # JAX-free PyTorch use
+diffusers==0.21.4
 accelerate==0.20.3
-huggingface_hub==0.16.4       # provides cached_download
+huggingface_hub==0.16.4
 tokenizers==0.13.3
 safetensors>=0.3.1,<0.6
 
@@ -18,22 +18,22 @@ safetensors>=0.3.1,<0.6
 controlnet-aux==0.0.7         # pulls scikit-image & opencv-python-headless
 
 # --------------------------  Math / Imaging basics  ------------------------- #
-numpy==1.24.3                 # pinned for manylinux wheels on Colab
+numpy==1.24.3                 # manylinux-friendly
 Pillow==9.5.0
 scipy==1.10.1
 einops==0.6.1
 omegaconf==2.3.0
 imageio==2.31.1
 
-# ---------------------------  TripoSR & 3-D stack  --------------------------- #
+# ---------------------------  TripoSR & 3-D stack  -------------------------- #
 trimesh==3.22.4
 xatlas==0.0.10
-PyMCubes==0.1.4               # pure-Python marching-cubes fallback
+PyMCubes==0.1.4               # pure-Python marching cubes
 # CUDA kernel (optional – compile yourself)
 # git+https://github.com/tatsy/torchmcubes.git
 
 # --------------------------  Background removal  ---------------------------- #
-rembg==2.0.50                 # pulls onnxruntime
+rembg==2.0.50
 onnxruntime>=1.16.0,<2.0.0
 
 # ------------------------------  Web server  -------------------------------- #
@@ -44,9 +44,11 @@ Flask-Cors==4.0.0
 psutil==5.9.5
 
 # -----------------------------  HTTP utilities  ----------------------------- #
-requests==2.32.3              # satisfies google-colab base image
+requests==2.32.3              # matches Colab base image
 opencv-python-headless>=4.7.0
 scikit-image>=0.20.0
 
-
-
+###############################################################################
+# Optional: Gradio demo
+# gradio>=4.27,<4.38
+###############################################################################
