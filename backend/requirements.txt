@@ -24,9 +24,13 @@ omegaconf==2.3.0
 # TripoSR specific
 trimesh==3.22.4
 imageio==2.31.1
+PyMCubes==0.1.6
 
 # Background removal
 rembg==2.0.50
+
+# Computer Vision - REQUIRED for sharpest() function
+opencv-python==4.8.0.76
 
 # Web server
 Flask==2.3.2
@@ -37,3 +41,6 @@ psutil==5.9.5
 
 # HTTP requests
 requests==2.31.0
+
+# xformers for memory efficiency (optional but recommended)
+xformers==0.0.22.post4
