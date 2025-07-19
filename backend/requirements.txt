@@ -23,11 +23,10 @@ scipy==1.10.1
 einops==0.6.1
 omegaconf==2.3.0
 
-# TripoSR specific - CRITICAL ADDITIONS
+# TripoSR specific (TripoSR itself is in backend folder)
 trimesh==3.22.4
 imageio==2.31.1
 PyMCubes==0.1.6
-git+https://github.com/VAST-AI-Research/TripoSR.git
 
 # Background removal
 rembg==2.0.50
@@ -45,5 +44,5 @@ psutil==5.9.5
 # HTTP requests
 requests==2.31.0
 
-# Memory optimization - Fixed version compatibility
+# Memory optimization
 xformers==0.0.21
