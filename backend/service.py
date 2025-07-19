@@ -10,40 +10,34 @@ from PIL import Image
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 
-# ── paths
+# ── paths ────────────────────────────────────────────────────────────────────
 TRIPOSR_PATH = os.path.join(os.path.dirname(__file__), "TripoSR-main")
 sys.path.insert(0, TRIPOSR_PATH)
 
-# ───────────────────────────────────────────────────────────────
-# Disable the CUDA-only torchmcubes extension so TripoSR falls
-# back to pure-Python PyMCubes (already in requirements.txt)
-# ───────────────────────────────────────────────────────────────
+# ── *Disable* CUDA-only torchmcubes: TripoSR will fall back to PyMCubes ─────
 os.environ["TSR_DISABLE_TORCHMCUBES"] = "1"
 
-# ── logging
+# ── logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("service.log")
-    ],
+    handlers=[logging.StreamHandler(), logging.FileHandler("service.log")],
 )
 log = logging.getLogger(__name__)
 atexit.register(lambda: (sys.stdout.flush(), sys.stderr.flush()))
 
-# ── timing decorator ----------------------------------------------------------
+# ── small timing decorator ───────────────────────────────────────────────────
 def timing(fn):
     @wraps(fn)
     def wrap(*a, **k):
-        start, cpu0 = time.time(), psutil.cpu_percent(None)
-        result = fn(*a, **k)
-        end, cpu1 = time.time(), psutil.cpu_percent(None)
-        log.info(f"{fn.__name__}: {end - start:.2f}s | CPU {cpu0:.1f}%→{cpu1:.1f}%")
-        return result
+        t0, cpu0 = time.time(), psutil.cpu_percent(None)
+        out = fn(*a, **k)
+        t1, cpu1 = time.time(), psutil.cpu_percent(None)
+        log.info(f"{fn.__name__}: {t1-t0:.2f}s | CPU {cpu0:.1f}%→{cpu1:.1f}%")
+        return out
     return wrap
 
-# ── tiny LRU (cache last 10 responses) ----------------------------------------
+# ── very small LRU – cache last 10 responses ────────────────────────────────
 class LRU:
     def __init__(self, n=10):
         self.n, self.d, self.o = n, {}, []
@@ -63,13 +57,13 @@ class LRU:
 
 cache = LRU()
 
-# ── clear CUDA memory ---------------------------------------------------------
 def clear_gpu():
+    """Empty CUDA cache after big ops."""
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         gc.collect()
 
-# ── model loading -------------------------------------------------------------
+# ── load models ──────────────────────────────────────────────────────────────
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 log.info(f"▶ loading models on {DEVICE}")
 
@@ -80,12 +74,13 @@ from diffusers import (
 )
 from controlnet_aux import CannyDetector
 from tsr.system import TSR
-from tsr.utils import resize_foreground, remove_background  # noqa: F401 (remove_background unused here)
+from tsr.utils import resize_foreground, remove_background  # noqa: F401
 
 edge_det = CannyDetector()
 
 cnet = ControlNetModel.from_pretrained(
-    "lllyasviel/sd-controlnet-canny", torch_dtype=torch.float16
+    "lllyasviel/sd-controlnet-canny",
+    torch_dtype=torch.float16,
 ).to(DEVICE)
 
 sd = StableDiffusionControlNetPipeline.from_pretrained(
@@ -101,41 +96,39 @@ except Exception:
 sd.enable_model_cpu_offload()
 sd.enable_attention_slicing()
 
-tsr = TSR.from_pretrained(
-    "stabilityai/TripoSR",
-    config_name="config.yaml",
-    weight_name="model.ckpt",
-).to(DEVICE).eval()
+tsr = (
+    TSR.from_pretrained(
+        "stabilityai/TripoSR",
+        config_name="config.yaml",
+        weight_name="model.ckpt",
+    )
+    .to(DEVICE)
+    .eval()
+)
 if hasattr(tsr, "renderer"):
     tsr.renderer.set_chunk_size(8192)
 
 log.info("✔ models ready")
 
-# ── Flask app -----------------------------------------------------------------
+# ── Flask app ────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 CORS(app)
 
-
 @app.get("/health")
 def health():
-    """Simple health-check endpoint."""
+    """Lightweight health check."""
     return jsonify(
-        dict(
-            status="ok",
-            gpu_mb=(
-                torch.cuda.memory_allocated() / 1024**2
-                if torch.cuda.is_available()
-                else 0
-            ),
-            cpu=psutil.cpu_percent(None),
-            mem=psutil.virtual_memory().percent,
-        )
+        status="ok",
+        gpu_mb=(
+            torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0
+        ),
+        cpu=psutil.cpu_percent(None),
+        mem=psutil.virtual_memory().percent,
     )
 
-
-# ── helper: pick sharpest image ----------------------------------------------
+# ── pick sharpest view of 4 renders ──────────────────────────────────────────
 def sharpest(img_list):
-    """Return the PIL image with highest Laplacian variance."""
+    """Return PIL image with highest Laplacian variance."""
     import cv2
 
     scores = [
@@ -144,8 +137,7 @@ def sharpest(img_list):
     ]
     return img_list[int(np.argmax(scores))]
 
-
-# ── /generate -----------------------------------------------------------------
+# ── /generate endpoint ───────────────────────────────────────────────────────
 @app.post("/generate")
 @timing
 def generate():
@@ -155,14 +147,13 @@ def generate():
     if "sketch" not in data:
         return jsonify(error="missing 'sketch'"), 400
 
-    # cache key
     key = data["sketch"][:120] + data.get("prompt", "")
     if (buf := cache.get(key)) is not None:
         return send_file(
             buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True
         )
 
-    # decode PNG → PIL
+    # decode base64 PNG → RGBA PIL
     try:
         png_bytes = base64.b64decode(data["sketch"].split(",", 1)[1])
         sketch = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
@@ -171,11 +162,11 @@ def generate():
 
     prompt = data.get("prompt", "a clean 3-D asset")
 
-    # 1) edge map
+    # 1) Canny edge map
     edge = edge_det(sketch)
     del sketch
 
-    # 2) SD-ControlNet (63 steps, guidance 9.96 – repo defaults)
+    # 2) Stable Diffusion + ControlNet
     with torch.no_grad():
         concept = sd(
             prompt,
@@ -185,26 +176,24 @@ def generate():
         ).images[0]
     clear_gpu()
 
-    # 3) foreground resize (1.0 keeps original size)
+    # 3) Resize FG so TripoSR sees full object
     concept = resize_foreground(concept, 1.0)
 
-    # 4) TripoSR → scene codes
+    # 4) TripoSR → latent scene codes
     with torch.no_grad(), (
         torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext()
     ):
         codes = tsr([concept], device=DEVICE)
     clear_gpu()
 
-    # 5) render four views, choose sharpest
+    # 5) Render 4 views, pick sharpest
     with torch.no_grad(), (
         torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext()
     ):
-        views = tsr.render(
-            codes, n_views=4, height=512, width=512, return_type="pil"
-        )[0]
+        views = tsr.render(codes, n_views=4, height=512, width=512, return_type="pil")[0]
     img = sharpest(views)
 
-    # save to buffer
+    # pack result
     buf = io.BytesIO()
     img.save(buf, "PNG")
     buf.seek(0)
@@ -215,7 +204,6 @@ def generate():
         buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True
     )
 
-
-# ── main ----------------------------------------------------------------------
+# ── main ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
