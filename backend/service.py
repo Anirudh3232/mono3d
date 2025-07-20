@@ -12,7 +12,7 @@ from contextlib import nullcontext
 import psutil
 import subprocess
 
-# Mock classes for compatibility
+# Mock classes for compatibility (unchanged)
 class MockCache:
     def __init__(self, *args, **kwargs):
         pass
@@ -33,7 +33,7 @@ class MockEncoderDecoderCache(MockCache):
     def decoder(self):
         return self
 
-# Compatibility patches
+# Compatibility patches (unchanged)
 import transformers
 for _n in ("Cache", "DynamicCache", "EncoderDecoderCache"):
     if not hasattr(transformers, _n):
@@ -68,7 +68,7 @@ diffusers.models.attention_processor.AttnProcessor2_0 = MockCache
 import transformers.models.llama.modeling_llama
 transformers.models.llama.modeling_llama.AttnProcessor2_0 = MockCache
 
-# Logging setup
+# Logging setup (unchanged)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -107,7 +107,7 @@ def clear_gpu_memory():
         else:
             clear_gpu_memory._gc_counter = 0
         
-        if clear_gpu_memory._gc_counter % 3 == 0:  # Run GC every 3rd call
+        if clear_gpu_memory._gc_counter % 3 == 0:
             gc.collect()
 
 def gpu_mem_mb():
@@ -145,7 +145,6 @@ class ResultCache:
     
     def get(self, key):
         if key in self.cache:
-            # Move to end of access order
             if key in self.access_order:
                 self.access_order.remove(key)
             self.access_order.append(key)
@@ -154,7 +153,6 @@ class ResultCache:
     
     def put(self, key, value):
         if len(self.cache) >= self.max_size:
-            # Remove least recently used
             lru_key = self.access_order.pop(0)
             del self.cache[lru_key]
         
@@ -365,9 +363,9 @@ try:
     app.sd.enable_attention_slicing()
     app.sd.enable_vae_slicing()
 
-    logger.info("Setting up TripoSR...")
+    logger.info("Setting up TripoSR …")
     _flush()
-    
+
     def ensure_module_on_device(module, target_device):
         """Helper function to ensure all tensors in a module are on the right device"""
         if module is None:
@@ -384,6 +382,7 @@ try:
                 continue
         return module
 
+    # Setup TripoSR model
     app.triposr = triposr_model
     app.triposr = ensure_module_on_device(app.triposr, DEVICE)
     
@@ -421,7 +420,12 @@ try:
             if cached_result:
                 logger.info("Returning cached result")
                 cached_result.seek(0)
-                return send_file(cached_result, mimetype="image/png", download_name="3d_render.png", as_attachment=True)
+                return send_file(
+                    cached_result,
+                    as_attachment=True,
+                    download_name='3d_render.png',
+                    mimetype='image/png'
+                )
 
             # Decode input image
             try:
@@ -433,13 +437,15 @@ try:
 
             prompt = data.get("prompt", "a clean 3-D asset")
             params = OptimizedParameters.get_optimized_params(data)
-            logger.info(f"Processing prompt: '{prompt}'")
+            logger.info(f"Processing prompt: '{prompt}' with params: {params}")
 
             # Edge detection
+            logger.info("Generating Canny edges...")
             edge = app.edge_det(pil)
             del pil
 
             # Stable Diffusion
+            logger.info("Running Stable Diffusion...")
             with torch.no_grad():
                 concept = app.sd(
                     prompt, image=edge,
@@ -450,20 +456,32 @@ try:
             clear_gpu_memory()
 
             # Resize foreground for TripoSR
+            logger.info("Resizing foreground...")
             concept = resize_foreground(concept, 1.0)
 
             # TripoSR scene generation
-            with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
-                codes = app.triposr([concept], device=DEVICE)
-            clear_gpu_memory()
-
-            # Render 4 views and select sharpest
+            logger.info("Generating 3D scene codes...")
             with torch.no_grad():
                 with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
-                    views = app.triposr.render(codes, n_views=4, height=512, width=512, return_type="pil")[0]
-            
-            final_image = sharpest(views)
+                    codes = app.triposr([concept], device=DEVICE)
             clear_gpu_memory()
+
+            # Render multiple views
+            logger.info("Rendering views...")
+            with torch.no_grad():
+                with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
+                    views = app.triposr.render(
+                        codes, 
+                        n_views=params['n_views'], 
+                        height=params['height'], 
+                        width=params['width'], 
+                        return_type="pil"
+                    )[0]
+            clear_gpu_memory()
+
+            # Select sharpest view
+            logger.info(f"Selecting sharpest from {len(views)} views...")
+            final_image = sharpest(views)
 
             # Return PNG image
             buf = io.BytesIO()
@@ -473,8 +491,16 @@ try:
             # Cache the result
             result_cache.put(cache_key, io.BytesIO(buf.getvalue()))
 
+            clear_gpu_memory()
             _flush()
-            return send_file(buf, mimetype="image/png", download_name="3d_render.png", as_attachment=True)
+            logger.info("✅ Generation completed successfully")
+            
+            return send_file(
+                buf,
+                as_attachment=True,
+                download_name='3d_render.png',
+                mimetype='image/png'
+            )
 
         except Exception as e:
             logger.error("Error in /generate", exc_info=True)
@@ -483,7 +509,7 @@ try:
             return jsonify({"error": str(e)}), 500
 
     if __name__ == "__main__":
-        logger.info("🚀 Starting TripoSR service")
+        logger.info("🚀 Starting TripoSR service on port 5000")
         app.run(host="0.0.0.0", port=5000)
 
 except Exception:
