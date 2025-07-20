@@ -208,32 +208,67 @@ def safe_resize_foreground(image, ratio=1.0):
         logger.info("Returning original image as fallback")
         return image
 
-# FIXED: Official TripoSR preprocessing with proper background handling
+# FIXED: Enhanced preprocessing with stride-safe operations
 def preprocess_image_for_triposr(input_image, do_remove_background=True, foreground_ratio=0.85):
-    """Preprocess image using official TripoSR methods for maximum quality"""
+    """Preprocess image with stride-safe operations to prevent negative stride errors"""
     def fill_background(image):
-        """Official background fill function from TripoSR demo"""
-        image = np.array(image).astype(np.float32) / 255.0
-        image = image[:, :, :3] * image[:, :, 3:4] + (1 - image[:, :, 3:4]) * 0.5
-        image = Image.fromarray((image * 255.0).astype(np.uint8))
-        return image
+        """Enhanced background fill function with stride safety"""
+        try:
+            # Convert PIL to numpy with stride safety
+            img_array = np.array(image).astype(np.float32)
+            
+            # FIXED: Ensure positive strides by copying array if needed
+            if img_array.strides and any(s < 0 for s in img_array.strides):
+                logger.info("🔧 Fixing negative strides with array.copy()")
+                img_array = img_array.copy()
+            
+            # Normalize
+            img_array = img_array / 255.0
+            
+            # Apply background fill
+            if img_array.shape[-1] == 4:  # RGBA
+                img_array = img_array[:, :, :3] * img_array[:, :, 3:4] + (1 - img_array[:, :, 3:4]) * 0.5
+            
+            # Convert back to PIL
+            img_array = (img_array * 255.0).astype(np.uint8)
+            
+            # FIXED: Create continuous array to prevent stride issues
+            img_array = np.ascontiguousarray(img_array)
+            
+            image = Image.fromarray(img_array)
+            return image
+            
+        except Exception as e:
+            logger.error(f"Background fill failed: {e}")
+            # Fallback to basic conversion
+            if image.mode == "RGBA":
+                white_bg = Image.new('RGB', image.size, (255, 255, 255))
+                white_bg.paste(image, mask=image.split()[-1])
+                return white_bg
+            return image.convert('RGB')
     
     try:
         if do_remove_background:
-            # Import removal tools locally to handle optional dependencies
             try:
                 import rembg
                 from tsr.utils import remove_background, resize_foreground
                 
+                # FIXED: Ensure input is stride-safe before processing
+                if input_image.mode != "RGB":
+                    input_image = input_image.convert("RGB")
+                
+                # Create a new image to ensure memory layout is clean
+                clean_image = Image.new("RGB", input_image.size)
+                clean_image.paste(input_image)
+                
                 rembg_session = rembg.new_session()
-                image = input_image.convert("RGB")
-                image = remove_background(image, rembg_session)
+                image = remove_background(clean_image, rembg_session)
                 image = resize_foreground(image, foreground_ratio)
                 image = fill_background(image)
-                logger.info("✅ Applied background removal and resizing")
+                logger.info("✅ Applied background removal with stride safety")
                 
             except ImportError as e:
-                logger.warning(f"Background removal not available: {e}, using basic preprocessing")
+                logger.warning(f"Background removal not available: {e}, using stride-safe preprocessing")
                 image = input_image
                 if image.mode == "RGBA":
                     image = fill_background(image)
@@ -247,24 +282,33 @@ def preprocess_image_for_triposr(input_image, do_remove_background=True, foregro
             elif image.mode != "RGB":
                 image = image.convert("RGB")
         
-        logger.info(f"✅ Image preprocessed: {image.size}, mode: {image.mode}")
+        # FIXED: Final stride safety check
+        # Convert to numpy to check strides
+        test_array = np.array(image)
+        if test_array.strides and any(s < 0 for s in test_array.strides):
+            logger.info("🔧 Final stride fix - creating clean image copy")
+            # Create a new clean image
+            clean_array = np.ascontiguousarray(test_array)
+            image = Image.fromarray(clean_array)
+        
+        logger.info(f"✅ Image preprocessed with stride safety: {image.size}, mode: {image.mode}")
         return image
         
     except Exception as e:
         logger.error(f"Preprocessing failed: {e}")
-        # Fallback to basic RGB conversion
+        # Ultimate fallback - create completely new image
         if input_image.mode == "RGBA":
-            # Create white background and blend alpha
             white_background = Image.new('RGB', input_image.size, (255, 255, 255))
             white_background.paste(input_image, mask=input_image.split()[-1])
             return white_background
         else:
-            return input_image.convert('RGB')
+            # Create a clean copy to ensure no stride issues
+            clean_array = np.ascontiguousarray(np.array(input_image.convert('RGB')))
+            return Image.fromarray(clean_array)
 
 class QualityOptimizedParameters:
     """Quality-optimized parameters for maximum output quality"""
     
-    # Quality-focused settings
     DEFAULT_INFERENCE_STEPS = 25
     DEFAULT_GUIDANCE_SCALE = 7.5
     DEFAULT_N_VIEWS = 4
@@ -311,16 +355,23 @@ result_cache = ResultCache()
 def sharpest(img_list):
     try:
         import cv2
-        scores = [
-            cv2.Laplacian(cv2.cvtColor(np.array(i), cv2.COLOR_RGB2GRAY), cv2.CV_64F).var()
-            for i in img_list
-        ]
+        scores = []
+        for i in img_list:
+            # FIXED: Ensure array is stride-safe before OpenCV processing
+            img_array = np.array(i)
+            if img_array.strides and any(s < 0 for s in img_array.strides):
+                img_array = img_array.copy()
+            
+            gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+            score = cv2.Laplacian(gray, cv2.CV_64F).var()
+            scores.append(score)
+            
         return img_list[int(np.argmax(scores))]
     except ImportError:
         logger.warning("OpenCV not available, returning first image")
         return img_list[0] if img_list else None
 
-# Marching cubes fallback
+# Marching cubes fallback with stride safety
 try:
     import torchmcubes
     logger.info("✅ Using torchmcubes")
@@ -332,14 +383,19 @@ except ImportError:
         import torch as _torch
         
         def _marching_cubes(vol: _torch.Tensor, thresh: float = 0.0):
-            v, f = PyMCubes.marching_cubes(vol.detach().cpu().numpy(), thresh)
+            # FIXED: Ensure stride safety in marching cubes
+            vol_numpy = vol.detach().cpu().numpy()
+            if vol_numpy.strides and any(s < 0 for s in vol_numpy.strides):
+                vol_numpy = vol_numpy.copy()
+            
+            v, f = PyMCubes.marching_cubes(vol_numpy, thresh)
             return (_torch.from_numpy(v).to(vol.device, dtype=vol.dtype),
                     _torch.from_numpy(f.astype(_np.int64)).to(vol.device))
         
         stub = types.ModuleType("torchmcubes")
         stub.marching_cubes = _marching_cubes
         sys.modules["torchmcubes"] = stub
-        logger.info("✅ Using PyMCubes fallback")
+        logger.info("✅ Using PyMCubes fallback with stride safety")
     except ImportError:
         try:
             from skimage import measure
@@ -348,20 +404,23 @@ except ImportError:
             import torch as _torch
             
             def _marching_cubes(vol: _torch.Tensor, thresh: float = 0.0):
-                verts, faces, _, _ = measure.marching_cubes(
-                    vol.detach().cpu().numpy(), level=thresh
-                )
+                # FIXED: Ensure stride safety in marching cubes
+                vol_numpy = vol.detach().cpu().numpy()
+                if vol_numpy.strides and any(s < 0 for s in vol_numpy.strides):
+                    vol_numpy = vol_numpy.copy()
+                
+                verts, faces, _, _ = measure.marching_cubes(vol_numpy, level=thresh)
                 return (_torch.from_numpy(verts).to(vol.device, dtype=vol.dtype),
                         _torch.from_numpy(faces.astype(_np.int64)).to(vol.device))
             
             stub = types.ModuleType("torchmcubes")
             stub.marching_cubes = _marching_cubes
             sys.modules["torchmcubes"] = stub
-            logger.info("✅ Using scikit-image fallback")
+            logger.info("✅ Using scikit-image fallback with stride safety")
         except ImportError:
             logger.warning("No marching cubes implementation available")
 
-print("Starting quality-optimized TripoSR service initialization...")
+print("Starting stride-safe, quality-optimized TripoSR service initialization...")
 try:
     logger.info("Importing diffusers...")
     _flush()
@@ -398,7 +457,7 @@ try:
 
     # Load models with quality optimization
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Loading models on {DEVICE} with quality optimization (float32)...")
+    logger.info(f"Loading models on {DEVICE} with stride-safe quality optimization...")
     
     if DEVICE == "cuda":
         torch.backends.cudnn.benchmark = True
@@ -406,7 +465,7 @@ try:
         torch.backends.cudnn.allow_tf32 = True
         torch.cuda.set_per_process_memory_fraction(0.9)
 
-    # FIXED: Load TripoSR in FULL FLOAT32 PRECISION for maximum quality
+    # Load TripoSR in FULL FLOAT32 PRECISION
     triposr_model = TSR.from_pretrained(
         "stabilityai/TripoSR",
         config_name="config.yaml", 
@@ -416,11 +475,11 @@ try:
     triposr_model.to(DEVICE)
     triposr_model.eval()
     
-    # Set optimal chunk size for quality processing
+    # Set optimal chunk size
     triposr_model.renderer.set_chunk_size(8192)
     
     clear_gpu_memory()
-    logger.info("✅ TripoSR loaded in FLOAT32 for maximum quality")
+    logger.info("✅ TripoSR loaded with stride-safe float32 processing")
 
     app = Flask(__name__)
     CORS(app)
@@ -434,14 +493,14 @@ try:
             "memory_percent": psutil.virtual_memory().percent,
             "triposr_available": True,
             "precision": "float32",
-            "quality_mode": True
+            "stride_safe": True
         })
 
     @app.route("/test", methods=["GET", "POST"])
     def test():
-        return jsonify({"message": "Quality-optimized TripoSR server is working!", "method": request.method})
+        return jsonify({"message": "Stride-safe TripoSR server is working!", "method": request.method})
 
-    # Load other models with quality settings
+    # Load other models
     logger.info("Loading edge detector...")
     _flush()
     app.edge_det = CannyDetector()
@@ -463,10 +522,10 @@ try:
     
     app.sd.scheduler = EulerAncestralDiscreteScheduler.from_config(app.sd.scheduler.config)
     
-    # Enable memory optimizations for Stable Diffusion
+    # Enable optimizations
     try:
         app.sd.enable_xformers_memory_efficient_attention()
-        logger.info("✅ xformers enabled for Stable Diffusion")
+        logger.info("✅ xformers enabled")
     except Exception as e:
         logger.warning(f"xformers not available: {e}")
     
@@ -488,7 +547,7 @@ try:
     app.triposr = ensure_module_on_device(app.triposr, DEVICE)
     
     clear_gpu_memory()
-    logger.info("✅ All models loaded with quality optimization")
+    logger.info("✅ All models loaded with stride safety")
     _flush()
 
     @app.route("/generate", methods=["POST"])
@@ -515,7 +574,7 @@ try:
                     as_attachment=True
                 )
 
-            # Decode input image
+            # Decode input image with stride safety
             try:
                 sketch_data = data["sketch"]
                 if "," in sketch_data:
@@ -525,9 +584,13 @@ try:
                 
                 pil = Image.open(io.BytesIO(png)).convert("RGBA")
                 
-                # Keep higher resolution for quality
+                # Keep higher resolution but ensure stride safety
                 if pil.size[0] > 768 or pil.size[1] > 768:
                     pil = pil.resize((768, 768), Image.Resampling.LANCZOS)
+                
+                # FIXED: Create clean copy to prevent stride issues
+                clean_array = np.ascontiguousarray(np.array(pil))
+                pil = Image.fromarray(clean_array)
                     
             except Exception as e:
                 logger.error(f"Image decode error: {e}")
@@ -535,13 +598,20 @@ try:
 
             prompt = data.get("prompt", "a clean 3-D asset")
             params = QualityOptimizedParameters.get_quality_params(data)
-            logger.info(f"Using quality parameters: {params}")
+            logger.info(f"Using stride-safe quality parameters: {params}")
 
             clear_gpu_memory()
 
-            # Edge detection
+            # Edge detection with stride safety
             try:
                 edge = app.edge_det(pil)
+                
+                # FIXED: Ensure edge detection output is stride-safe
+                edge_array = np.array(edge)
+                if edge_array.strides and any(s < 0 for s in edge_array.strides):
+                    edge_array = np.ascontiguousarray(edge_array)
+                    edge = Image.fromarray(edge_array)
+                
                 del pil
                 clear_gpu_memory()
             except Exception as e:
@@ -565,7 +635,13 @@ try:
                         if concept is None:
                             raise ValueError("Stable Diffusion returned None concept")
                         
-                        logger.info(f"Concept type: {type(concept)}, size: {concept.size if hasattr(concept, 'size') else 'unknown'}")
+                        # FIXED: Ensure concept is stride-safe
+                        concept_array = np.array(concept)
+                        if concept_array.strides and any(s < 0 for s in concept_array.strides):
+                            concept_array = np.ascontiguousarray(concept_array)
+                            concept = Image.fromarray(concept_array)
+                        
+                        logger.info(f"Stride-safe concept: {type(concept)}, size: {concept.size if hasattr(concept, 'size') else 'unknown'}")
                         
                 del edge, result
                 clear_gpu_memory()
@@ -573,7 +649,7 @@ try:
                 logger.error(f"Stable Diffusion failed: {e}")
                 return jsonify({"error": f"Stable Diffusion failed: {str(e)}"}), 500
 
-            # Resize with quality preservation
+            # Resize with stride safety
             try:
                 logger.info(f"About to resize concept: {type(concept)}")
                 
@@ -582,22 +658,27 @@ try:
                     logger.info("✅ TripoSR resize_foreground successful")
                 except Exception as resize_error:
                     logger.warning(f"TripoSR resize_foreground failed: {resize_error}")
-                    logger.info("🔄 Falling back to safe_resize_foreground")
                     concept = safe_resize_foreground(concept, 1.0)
                 
                 if concept is None:
                     raise ValueError("Concept is None after resize")
+                
+                # FIXED: Final stride safety check after resize
+                concept_array = np.array(concept)
+                if concept_array.strides and any(s < 0 for s in concept_array.strides):
+                    concept_array = np.ascontiguousarray(concept_array)
+                    concept = Image.fromarray(concept_array)
                     
                 clear_gpu_memory()
-                logger.info("✅ Resize completed successfully")
+                logger.info("✅ Stride-safe resize completed")
                 
             except Exception as e:
-                logger.error(f"All resize methods failed: {e}")
+                logger.error(f"Resize failed: {e}")
                 return jsonify({"error": f"Resize failed: {str(e)}"}), 500
 
-            # FIXED: TripoSR processing with correct extract_mesh parameters
+            # FIXED: TripoSR processing with comprehensive stride safety
             try:
-                # Preprocess image using official TripoSR methods
+                # Preprocess with stride safety
                 processed_image = preprocess_image_for_triposr(
                     concept, 
                     do_remove_background=True, 
@@ -605,29 +686,27 @@ try:
                 )
                 
                 with torch.no_grad():
-                    logger.info("Calling TripoSR with float32 precision for maximum quality")
+                    logger.info("Calling TripoSR with stride-safe float32 processing")
                     scene_codes = app.triposr(processed_image, device=DEVICE)
                     
-                    # FIXED: Extract mesh with only valid parameters
+                    # Extract mesh
                     mesh = app.triposr.extract_mesh(
                         scene_codes, 
                         resolution=params['mc_resolution']
                     )[0]
                     
-                    # Apply proper orientation
+                    # Apply orientation
                     mesh = to_gradio_3d_orientation(mesh)
                     
                     del scene_codes, processed_image
                     
                 clear_gpu_memory()
 
-                # Generate high-quality views for selection
+                # Generate views with stride safety
                 try:
                     with torch.no_grad():
-                        # Create temporary scene codes for rendering
                         temp_scene_codes = app.triposr(concept, device=DEVICE)
                         
-                        # Render multiple views for quality selection
                         rendered_views = app.triposr.render(
                             temp_scene_codes,
                             n_views=params['n_views'],
@@ -638,17 +717,17 @@ try:
                         views = rendered_views
                     
                     clear_gpu_memory()
-                    logger.info(f"✅ Generated {len(views)} high-quality views")
+                    logger.info(f"✅ Generated {len(views)} stride-safe views")
                     
                 except Exception as render_error:
-                    logger.warning(f"Multi-view rendering failed: {render_error}, using concept as fallback")
+                    logger.warning(f"Multi-view rendering failed: {render_error}, using concept")
                     views = [concept]
                     
             except Exception as e:
                 logger.error(f"TripoSR processing failed: {e}")
                 return jsonify({"error": f"TripoSR processing failed: {str(e)}"}), 500
 
-            # Select highest quality view
+            # Select best view with stride safety
             try:
                 final_image = sharpest(views)
                 del views
@@ -656,13 +735,19 @@ try:
                 if final_image is None:
                     return jsonify({"error": "Failed to generate final image"}), 500
 
-                logger.info("✅ Selected highest quality view")
+                # FIXED: Final stride safety check
+                final_array = np.array(final_image)
+                if final_array.strides and any(s < 0 for s in final_array.strides):
+                    final_array = np.ascontiguousarray(final_array)
+                    final_image = Image.fromarray(final_array)
+
+                logger.info("✅ Selected stride-safe highest quality view")
 
             except Exception as e:
                 logger.error(f"View selection failed: {e}")
                 return jsonify({"error": f"View selection failed: {str(e)}"}), 500
 
-            # Return high-quality result
+            # Return result
             try:
                 buf = io.BytesIO()
                 final_image.save(buf, "PNG", optimize=False, compress_level=1)
@@ -675,7 +760,7 @@ try:
                 return send_file(
                     buf, 
                     mimetype="image/png", 
-                    download_name="3d_render_hq.png", 
+                    download_name="3d_render_stride_safe.png", 
                     as_attachment=True
                 )
             except Exception as e:
@@ -686,7 +771,7 @@ try:
             logger.error(f"CUDA OOM: {e}")
             clear_gpu_memory()
             return jsonify({
-                "error": "GPU memory insufficient. Try reducing resolution or parameters."
+                "error": "GPU memory insufficient. Try reducing resolution."
             }), 500
         except Exception as e:
             logger.error("Unexpected error in /generate", exc_info=True)
@@ -694,7 +779,7 @@ try:
             return jsonify({"error": f"Server error: {str(e)}"}), 500
 
     if __name__ == "__main__":
-        logger.info("🚀 Starting QUALITY-OPTIMIZED TripoSR service (Float32)")
+        logger.info("🚀 Starting STRIDE-SAFE Quality-Optimized TripoSR service")
         app.run(host="0.0.0.0", port=5000, debug=False)
 
 except Exception as e:
