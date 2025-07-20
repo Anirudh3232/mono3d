@@ -2,7 +2,7 @@ from typing import Callable, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
-import sys, os, base64, io, gc, time, types, importlib, logging, atexit
+import sys, os, base64, io, gc, time, types, importlib, logging, atexit, tempfile
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from PIL import Image
@@ -208,53 +208,83 @@ def safe_resize_foreground(image, ratio=1.0):
         logger.info("Returning original image as fallback")
         return image
 
-# FIXED: Use TripoSR's official preprocessing approach
-def prepare_image_for_triposr_official(pil_image):
-    """Prepare PIL Image following TripoSR's official preprocessing approach"""
+# FIXED: Official TripoSR preprocessing with proper background handling
+def preprocess_image_for_triposr(input_image, do_remove_background=True, foreground_ratio=0.85):
+    """Preprocess image using official TripoSR methods for maximum quality"""
+    def fill_background(image):
+        """Official background fill function from TripoSR demo"""
+        image = np.array(image).astype(np.float32) / 255.0
+        image = image[:, :, :3] * image[:, :, 3:4] + (1 - image[:, :, 3:4]) * 0.5
+        image = Image.fromarray((image * 255.0).astype(np.uint8))
+        return image
+    
     try:
-        def fill_background(image):
-            """Fill background function from official TripoSR demo"""
-            image = np.array(image).astype(np.float32) / 255.0
-            image = image[:, :, :3] * image[:, :, 3:4] + (1 - image[:, :, 3:4]) * 0.5
-            image = Image.fromarray((image * 255.0).astype(np.uint8))
-            return image
-        
-        # Convert to RGB if needed
-        if pil_image.mode == 'RGBA':
-            # Use the official background filling approach
-            processed_image = fill_background(pil_image)
-            logger.info("✅ Applied official RGBA background filling")
+        if do_remove_background:
+            # Import removal tools locally to handle optional dependencies
+            try:
+                import rembg
+                from tsr.utils import remove_background, resize_foreground
+                
+                rembg_session = rembg.new_session()
+                image = input_image.convert("RGB")
+                image = remove_background(image, rembg_session)
+                image = resize_foreground(image, foreground_ratio)
+                image = fill_background(image)
+                logger.info("✅ Applied background removal and resizing")
+                
+            except ImportError as e:
+                logger.warning(f"Background removal not available: {e}, using basic preprocessing")
+                image = input_image
+                if image.mode == "RGBA":
+                    image = fill_background(image)
+                elif image.mode != "RGB":
+                    image = image.convert("RGB")
+                    
         else:
-            processed_image = pil_image.convert('RGB')
-            logger.info("✅ Converted to RGB")
+            image = input_image
+            if image.mode == "RGBA":
+                image = fill_background(image)
+            elif image.mode != "RGB":
+                image = image.convert("RGB")
         
-        logger.info(f"✅ Image prepared for TripoSR: {processed_image.size}, mode: {processed_image.mode}")
-        return processed_image
+        logger.info(f"✅ Image preprocessed: {image.size}, mode: {image.mode}")
+        return image
         
     except Exception as e:
-        logger.error(f"Image preparation failed: {e}")
+        logger.error(f"Preprocessing failed: {e}")
         # Fallback to basic RGB conversion
-        return pil_image.convert('RGB') if pil_image.mode != 'RGB' else pil_image
+        if input_image.mode == "RGBA":
+            # Create white background and blend alpha
+            white_background = Image.new('RGB', input_image.size, (255, 255, 255))
+            white_background.paste(input_image, mask=input_image.split()[-1])
+            return white_background
+        else:
+            return input_image.convert('RGB')
 
-class OptimizedParameters:
-    DEFAULT_INFERENCE_STEPS = 20
-    DEFAULT_GUIDANCE_SCALE = 7.0
-    DEFAULT_N_VIEWS = 2
-    DEFAULT_HEIGHT = 256
-    DEFAULT_WIDTH = 256
+class QualityOptimizedParameters:
+    """Quality-optimized parameters for maximum output quality"""
+    
+    # Quality-focused settings (higher than previous memory-optimized versions)
+    DEFAULT_INFERENCE_STEPS = 25    # Increased for quality
+    DEFAULT_GUIDANCE_SCALE = 7.5    # Standard quality setting
+    DEFAULT_N_VIEWS = 4             # More views for better selection
+    DEFAULT_HEIGHT = 512           # Higher resolution for quality
+    DEFAULT_WIDTH = 512            # Higher resolution for quality
+    DEFAULT_MC_RESOLUTION = 256    # Marching cubes resolution
     
     @classmethod
-    def get_optimized_params(cls, data):
+    def get_quality_params(cls, data):
         return {
             'num_inference_steps': int(data.get("num_inference_steps", cls.DEFAULT_INFERENCE_STEPS)),
             'guidance_scale': float(data.get("guidance_scale", cls.DEFAULT_GUIDANCE_SCALE)),
             'n_views': int(data.get("n_views", cls.DEFAULT_N_VIEWS)),
             'height': int(data.get("height", cls.DEFAULT_HEIGHT)),
-            'width': int(data.get("width", cls.DEFAULT_WIDTH))
+            'width': int(data.get("width", cls.DEFAULT_WIDTH)),
+            'mc_resolution': int(data.get("mc_resolution", cls.DEFAULT_MC_RESOLUTION))
         }
 
 class ResultCache:
-    def __init__(self, max_size=5):
+    def __init__(self, max_size=3):  # Reduced cache size for quality processing
         self.cache = {}
         self.max_size = max_size
         self.access_order = []
@@ -319,7 +349,7 @@ except ImportError:
             
             def _marching_cubes(vol: _torch.Tensor, thresh: float = 0.0):
                 verts, faces, _, _ = measure.marching_cubes(
-                    vol.detach.cpu().numpy(), level=thresh
+                    vol.detach().cpu().numpy(), level=thresh
                 )
                 return (_torch.from_numpy(verts).to(vol.device, dtype=vol.dtype),
                         _torch.from_numpy(faces.astype(_np.int64)).to(vol.device))
@@ -331,7 +361,7 @@ except ImportError:
         except ImportError:
             logger.warning("No marching cubes implementation available")
 
-print("Starting memory-optimized service initialization...")
+print("Starting quality-optimized TripoSR service initialization...")
 try:
     logger.info("Importing diffusers...")
     _flush()
@@ -360,23 +390,24 @@ try:
     # Import TripoSR
     try:
         from tsr.system import TSR
-        from tsr.utils import resize_foreground, remove_background
+        from tsr.utils import resize_foreground, remove_background, to_gradio_3d_orientation
         logger.info("✅ TripoSR imported successfully")
     except ImportError as e:
         logger.error(f"❌ TripoSR import failed: {e}")
         raise
 
-    # Load models with memory optimization
+    # Load models with quality optimization
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Loading models on {DEVICE} with memory optimization...")
+    logger.info(f"Loading models on {DEVICE} with quality optimization (float32)...")
     
     if DEVICE == "cuda":
         torch.backends.cudnn.benchmark = True
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
-        torch.cuda.set_per_process_memory_fraction(0.8)
+        # Increased memory fraction for quality processing
+        torch.cuda.set_per_process_memory_fraction(0.9)
 
-    # Load TripoSR with memory optimization
+    # FIXED: Load TripoSR in FULL FLOAT32 PRECISION for maximum quality
     triposr_model = TSR.from_pretrained(
         "stabilityai/TripoSR",
         config_name="config.yaml", 
@@ -384,15 +415,14 @@ try:
     )
     
     triposr_model.to(DEVICE)
-    if DEVICE == "cuda":
-        triposr_model = triposr_model.half()
+    # REMOVED: No half precision conversion - keep full float32 for quality
     triposr_model.eval()
     
-    # IMPORTANT: Set chunk size like official demo
-    triposr_model.renderer.set_chunk_size(131072)
+    # Set optimal chunk size for quality processing
+    triposr_model.renderer.set_chunk_size(8192)  # Balanced for quality and memory
     
     clear_gpu_memory()
-    logger.info("✅ TripoSR loaded with memory optimization")
+    logger.info("✅ TripoSR loaded in FLOAT32 for maximum quality")
 
     app = Flask(__name__)
     CORS(app)
@@ -404,14 +434,16 @@ try:
             "gpu_mb": gpu_mem_mb(),
             "cpu_percent": psutil.cpu_percent(interval=None),
             "memory_percent": psutil.virtual_memory().percent,
-            "triposr_available": True
+            "triposr_available": True,
+            "precision": "float32",
+            "quality_mode": True
         })
 
     @app.route("/test", methods=["GET", "POST"])
     def test():
-        return jsonify({"message": "Memory-optimized server is working!", "method": request.method})
+        return jsonify({"message": "Quality-optimized TripoSR server is working!", "method": request.method})
 
-    # Load other models
+    # Load other models with quality settings
     logger.info("Loading edge detector...")
     _flush()
     app.edge_det = CannyDetector()
@@ -420,7 +452,7 @@ try:
     _flush()
     app.cnet = ControlNetModel.from_pretrained(
         "lllyasviel/sd-controlnet-canny", 
-        torch_dtype=torch.float16
+        torch_dtype=torch.float16  # Keep half precision for Stable Diffusion
     ).to(DEVICE)
     
     logger.info("Loading Stable Diffusion...")
@@ -428,15 +460,15 @@ try:
     app.sd = StableDiffusionControlNetPipeline.from_pretrained(
         "runwayml/stable-diffusion-v1-5", 
         controlnet=app.cnet,
-        torch_dtype=torch.float16
+        torch_dtype=torch.float16  # Keep half precision for Stable Diffusion
     ).to(DEVICE)
     
     app.sd.scheduler = EulerAncestralDiscreteScheduler.from_config(app.sd.scheduler.config)
     
-    # Enable memory optimizations
+    # Enable memory optimizations for Stable Diffusion
     try:
         app.sd.enable_xformers_memory_efficient_attention()
-        logger.info("✅ xformers enabled")
+        logger.info("✅ xformers enabled for Stable Diffusion")
     except Exception as e:
         logger.warning(f"xformers not available: {e}")
     
@@ -458,7 +490,7 @@ try:
     app.triposr = ensure_module_on_device(app.triposr, DEVICE)
     
     clear_gpu_memory()
-    logger.info("✅ All models loaded with memory optimization")
+    logger.info("✅ All models loaded with quality optimization")
     _flush()
 
     @app.route("/generate", methods=["POST"])
@@ -495,16 +527,17 @@ try:
                 
                 pil = Image.open(io.BytesIO(png)).convert("RGBA")
                 
-                if pil.size[0] > 512 or pil.size[1] > 512:
-                    pil = pil.resize((512, 512), Image.Resampling.LANCZOS)
+                # Keep higher resolution for quality
+                if pil.size[0] > 768 or pil.size[1] > 768:
+                    pil = pil.resize((768, 768), Image.Resampling.LANCZOS)
                     
             except Exception as e:
                 logger.error(f"Image decode error: {e}")
                 return jsonify({"error": f"Bad image data: {str(e)}"}), 400
 
             prompt = data.get("prompt", "a clean 3-D asset")
-            params = OptimizedParameters.get_optimized_params(data)
-            logger.info(f"Using parameters: {params}")
+            params = QualityOptimizedParameters.get_quality_params(data)
+            logger.info(f"Using quality parameters: {params}")
 
             clear_gpu_memory()
 
@@ -517,7 +550,7 @@ try:
                 logger.error(f"Edge detection failed: {e}")
                 return jsonify({"error": f"Edge detection failed: {str(e)}"}), 500
 
-            # Stable Diffusion
+            # Stable Diffusion (keeps half precision as it handles it well)
             try:
                 with torch.no_grad():
                     with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
@@ -542,7 +575,7 @@ try:
                 logger.error(f"Stable Diffusion failed: {e}")
                 return jsonify({"error": f"Stable Diffusion failed: {str(e)}"}), 500
 
-            # Resize with fallback
+            # Resize with quality preservation
             try:
                 logger.info(f"About to resize concept: {type(concept)}")
                 
@@ -564,49 +597,62 @@ try:
                 logger.error(f"All resize methods failed: {e}")
                 return jsonify({"error": f"Resize failed: {str(e)}"}), 500
 
-            # FIXED: TripoSR processing using official approach
+            # FIXED: TripoSR processing in FLOAT32 using official approach
             try:
-                # Prepare image using official TripoSR preprocessing
-                processed_image = prepare_image_for_triposr_official(concept)
+                # Preprocess image using official TripoSR methods
+                processed_image = preprocess_image_for_triposr(
+                    concept, 
+                    do_remove_background=True, 
+                    foreground_ratio=0.85
+                )
                 
                 with torch.no_grad():
-                    # FIXED: Use official TripoSR call pattern - direct PIL Image input
-                    logger.info("Calling TripoSR with PIL Image (official pattern)")
+                    # Use official TripoSR call pattern - float32 precision maintained
+                    logger.info("Calling TripoSR with float32 precision for maximum quality")
                     scene_codes = app.triposr(processed_image, device=DEVICE)
                     
-                    # Extract mesh using official pattern
-                    mesh = app.triposr.extract_mesh(scene_codes, resolution=256)[0]
+                    # Extract mesh with quality settings
+                    mesh = app.triposr.extract_mesh(
+                        scene_codes, 
+                        has_vertex_color=True,  # Enable vertex colors for quality
+                        resolution=params['mc_resolution']
+                    )[0]
+                    
+                    # Apply proper orientation
+                    mesh = to_gradio_3d_orientation(mesh)
+                    
                     del scene_codes, processed_image
                     
                 clear_gpu_memory()
 
-                # FIXED: Render using TripoSR's mesh export to create views
+                # Generate multiple high-quality views for selection
                 try:
-                    # Convert mesh to PIL images for view selection
-                    import tempfile
-                    import trimesh
-                    
-                    # Export mesh temporarily to create renderings
-                    with tempfile.NamedTemporaryFile(suffix=".obj", delete=False) as temp_file:
-                        mesh.export(temp_file.name)
+                    with torch.no_grad():
+                        # Create temporary scene codes for rendering
+                        temp_scene_codes = app.triposr([concept], device=DEVICE)
                         
-                        # Create simple rendered views (fallback approach)
-                        # For now, create a single view as PIL image
-                        views = [concept]  # Use original concept as fallback view
+                        # Render multiple views for quality selection
+                        rendered_views = app.triposr.render(
+                            temp_scene_codes,
+                            n_views=params['n_views'],
+                            return_type="pil"
+                        )[0]
                         
-                    os.unlink(temp_file.name)  # Clean up temp file
+                        del temp_scene_codes
+                        views = rendered_views
                     
-                except Exception as e:
-                    logger.warning(f"Mesh rendering failed: {e}, using concept as fallback")
+                    clear_gpu_memory()
+                    logger.info(f"✅ Generated {len(views)} high-quality views")
+                    
+                except Exception as render_error:
+                    logger.warning(f"Multi-view rendering failed: {render_error}, using concept as fallback")
                     views = [concept]
                     
-                clear_gpu_memory()
-                
             except Exception as e:
                 logger.error(f"TripoSR processing failed: {e}")
                 return jsonify({"error": f"TripoSR processing failed: {str(e)}"}), 500
 
-            # Select sharpest view
+            # Select highest quality view
             try:
                 final_image = sharpest(views)
                 del views
@@ -614,14 +660,17 @@ try:
                 if final_image is None:
                     return jsonify({"error": "Failed to generate final image"}), 500
 
+                logger.info("✅ Selected highest quality view")
+
             except Exception as e:
                 logger.error(f"View selection failed: {e}")
                 return jsonify({"error": f"View selection failed: {str(e)}"}), 500
 
-            # Return result
+            # Return high-quality result
             try:
                 buf = io.BytesIO()
-                final_image.save(buf, "PNG")
+                # Save at maximum quality
+                final_image.save(buf, "PNG", optimize=False, compress_level=1)
                 buf.seek(0)
 
                 result_cache.put(cache_key, io.BytesIO(buf.getvalue()))
@@ -631,7 +680,7 @@ try:
                 return send_file(
                     buf, 
                     mimetype="image/png", 
-                    download_name="3d_render.png", 
+                    download_name="3d_render_hq.png", 
                     as_attachment=True
                 )
             except Exception as e:
@@ -642,7 +691,7 @@ try:
             logger.error(f"CUDA OOM: {e}")
             clear_gpu_memory()
             return jsonify({
-                "error": "GPU memory insufficient. Try reducing image size or parameters."
+                "error": "GPU memory insufficient. Try reducing resolution or parameters."
             }), 500
         except Exception as e:
             logger.error("Unexpected error in /generate", exc_info=True)
@@ -650,7 +699,7 @@ try:
             return jsonify({"error": f"Server error: {str(e)}"}), 500
 
     if __name__ == "__main__":
-        logger.info("🚀 Starting memory-optimized TripoSR service")
+        logger.info("🚀 Starting QUALITY-OPTIMIZED TripoSR service (Float32)")
         app.run(host="0.0.0.0", port=5000, debug=False)
 
 except Exception as e:
