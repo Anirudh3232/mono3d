@@ -23,6 +23,9 @@ Pillow>=9.5.0,<11.0.0
 opencv-python>=4.8.0
 imageio==2.34.0
 
+# ─────────────── Background removal ───────────────
+rembg>=2.0.53,<3.0.0
+
 # ─────────────── API Server ───────────────
 Flask==3.0.3
 Flask-Cors==4.0.1
