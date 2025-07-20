@@ -33,5 +33,7 @@ Flask-Cors==4.0.1
 # ─────────────── System Monitoring ───────────────
 psutil>=5.9.0,<6.0.0
 
+onnxruntime>=1.16.0,<2.0.0
+
 # ─────────────── Testing ───────────────
 requests>=2.31.0,<3.0.0
