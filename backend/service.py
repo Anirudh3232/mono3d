@@ -143,6 +143,20 @@ def clear_gpu_memory():
 def gpu_mem_mb():
     return (torch.cuda.memory_allocated() / 1024 ** 2) if torch.cuda.is_available() else 0
 
+# ADDED: Utility function to handle tensor/tuple conversions
+def ensure_tensor(data):
+    """Convert tuple outputs to tensors safely"""
+    if isinstance(data, tuple):
+        # If it's a tuple, extract the first element (usually the main tensor)
+        data = data[0]
+    if hasattr(data, 'dim'):
+        return data
+    elif torch.is_tensor(data):
+        return data
+    else:
+        # Convert to tensor if it's not already one
+        return torch.tensor(data) if not isinstance(data, torch.Tensor) else data
+
 class OptimizedParameters:
     """Memory-optimized parameters to prevent CUDA OOM"""
     
@@ -340,7 +354,6 @@ try:
     
     logger.info("Loading Stable Diffusion...")
     _flush()
-    # FIXED: Proper initialization with torch_dtype instead of calling .half() later
     app.sd = StableDiffusionControlNetPipeline.from_pretrained(
         "runwayml/stable-diffusion-v1-5", 
         controlnet=app.cnet,
@@ -439,7 +452,7 @@ try:
                 logger.error(f"Edge detection failed: {e}")
                 return jsonify({"error": f"Edge detection failed: {str(e)}"}), 500
 
-            # Stable Diffusion with memory management
+            # Stable Diffusion with memory management and tuple handling
             try:
                 with torch.no_grad():
                     with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
@@ -449,8 +462,14 @@ try:
                             num_inference_steps=params['num_inference_steps'], 
                             guidance_scale=params['guidance_scale']
                         )
-                        concept = result.images[0]
-                del edge
+                        # FIXED: Handle potential tuple return from SD pipeline
+                        if hasattr(result, 'images'):
+                            concept = result.images[0]
+                        elif isinstance(result, tuple):
+                            concept = result[0].images[0] if hasattr(result[0], 'images') else result[0]
+                        else:
+                            concept = result
+                del edge, result
                 clear_gpu_memory()
             except Exception as e:
                 logger.error(f"Stable Diffusion failed: {e}")
@@ -464,23 +483,33 @@ try:
                 logger.error(f"Resize failed: {e}")
                 return jsonify({"error": f"Resize failed: {str(e)}"}), 500
 
-            # TripoSR processing
+            # TripoSR processing with enhanced tuple handling
             try:
                 with torch.no_grad():
                     with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
-                        codes = app.triposr([concept], device=DEVICE)
+                        # FIXED: Enhanced handling for TripoSR output
+                        raw_codes = app.triposr([concept], device=DEVICE)
+                        # Ensure we have tensor objects, not tuples
+                        codes = ensure_tensor(raw_codes)
+                        del raw_codes
                 clear_gpu_memory()
 
-                # Render views
+                # Render views with tuple handling
                 with torch.no_grad():
                     with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
-                        views = app.triposr.render(
+                        raw_views = app.triposr.render(
                             codes, 
                             n_views=params['n_views'], 
                             height=params['height'], 
                             width=params['width'], 
                             return_type="pil"
-                        )[0]
+                        )
+                        # FIXED: Handle tuple output from render function
+                        if isinstance(raw_views, tuple):
+                            views = raw_views[0]
+                        else:
+                            views = raw_views
+                        del raw_views
                 del codes
                 clear_gpu_memory()
             except Exception as e:
