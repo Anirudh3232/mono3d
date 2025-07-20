@@ -10,6 +10,7 @@ from functools import wraps
 from torch.cuda.amp import autocast
 from contextlib import nullcontext
 import psutil
+import subprocess  # For Git cloning
 
 # Mock classes for compatibility
 class MockCache:
@@ -181,15 +182,24 @@ try:
     from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, EulerAncestralDiscreteScheduler
     from controlnet_aux import CannyDetector
 
-    # TripoSR imports - load from your local backend
-    logger.info("Importing TripoSR from local backend...")
+    # TripoSR path setup and Git clone if needed
+    logger.info("Setting up TripoSR from GitHub...")
+    triposr_path = os.path.join(os.path.dirname(__file__), "TripoSR-main")
+    if not os.path.exists(triposr_path):
+        logger.info("TripoSR-main not found. Cloning from GitHub...")
+        subprocess.run(["git", "clone", "https://github.com/VAST-AI-Research/TripoSR.git", triposr_path], check=True)
+        logger.info("✅ TripoSR cloned from GitHub")
+
+    if triposr_path not in sys.path:
+        sys.path.insert(0, triposr_path)
+
+    # Import TripoSR modules
     try:
         from tsr.system import TSR
         from tsr.utils import resize_foreground, remove_background
-        logger.info("✅ TripoSR imported successfully from local backend")
+        logger.info("✅ TripoSR imported successfully")
     except ImportError as e:
         logger.error(f"❌ Failed to import TripoSR: {e}")
-        logger.error(f"Make sure TripoSR-main directory exists at: {os.path.join(os.path.dirname(__file__), 'TripoSR-main')}")
         raise
 
     # Load TripoSR model
@@ -215,8 +225,7 @@ try:
             "gpu_mb": gpu_mem_mb(),
             "cpu_percent": psutil.cpu_percent(interval=None),
             "memory_percent": psutil.virtual_memory().percent,
-            "triposr_available": True,
-            "optimization_available": True  # Adjust based on your setup
+            "triposr_available": True
         })
 
     # Test endpoint
@@ -335,21 +344,7 @@ try:
             prompt = data.get("prompt", "a clean 3-D asset")
 
             # Get parameters
-            profile_name = data.get("profile", "maximum_quality") # Default to maximum_quality
-            custom_params = data.get("custom_params", {})
-
-            if OPTIMIZATION_AVAILABLE:
-                try:
-                    params = get_profile_parameters(profile_name, custom_params)
-                    logger.info(f"Using parameters from '{profile_name}' profile.")
-                except Exception as e:
-                    logger.warning(f"Failed to load profile '{profile_name}': {e}. Defaulting to 'standard'.")
-                    params = get_profile_parameters("standard", custom_params)
-            else:
-                # Fallback if optimization_config.py is missing
-                logger.warning("Optimization profiles not available. Using legacy parameter logic.")
-                params = OptimizedParameters.get_optimized_params(data)
-
+            params = OptimizedParameters.get_optimized_params(data)
             logger.info(f"Using generation parameters: {params}")
 
             # A) Edge detection
