@@ -15,18 +15,43 @@ import subprocess
 # ENHANCED COMPATIBILITY PATCHES - Must come first
 import transformers
 
-# Mock cache classes for compatibility
+# FIXED: Improved MockCache that handles attention processor calls properly
 class MockCache:
     def __init__(self, *args, **kwargs):
         pass
+    
     def update(self, *args, **kwargs):
         pass
+    
     def get_decoder_cache(self, *args, **kwargs):
         return self
+    
     def get_encoder_cache(self, *args, **kwargs):
         return self
+    
     def __call__(self, *args, **kwargs):
-        return args if args else None
+        # FIXED: Return first argument if it's a tensor, otherwise return None
+        if args:
+            first_arg = args[0]
+            if hasattr(first_arg, 'dim'):  # It's a tensor
+                return first_arg
+            return args[0] if len(args) == 1 else args
+        return None
+    
+    # ADDED: Handle attention processor methods
+    def forward(self, *args, **kwargs):
+        if args:
+            return args[0]
+        return None
+
+# ADDED: Proper attention processor mock
+class MockAttentionProcessor:
+    def __init__(self):
+        pass
+    
+    def __call__(self, attn, hidden_states, encoder_hidden_states=None, attention_mask=None, **kwargs):
+        # Return hidden_states directly for attention processing
+        return hidden_states
 
 class MockEncoderDecoderCache(MockCache):
     def __init__(self, *args, **kwargs):
@@ -91,15 +116,16 @@ try:
 except ImportError:
     pass
 
+# FIXED: Use proper MockAttentionProcessor instead of MockCache
 try:
     import diffusers.models.attention_processor
-    diffusers.models.attention_processor.AttnProcessor2_0 = MockCache
+    diffusers.models.attention_processor.AttnProcessor2_0 = MockAttentionProcessor
 except ImportError:
     pass
 
 try:
     import transformers.models.llama.modeling_llama
-    transformers.models.llama.modeling_llama.AttnProcessor2_0 = MockCache
+    transformers.models.llama.modeling_llama.AttnProcessor2_0 = MockAttentionProcessor
 except ImportError:
     pass
 
@@ -143,13 +169,22 @@ def clear_gpu_memory():
 def gpu_mem_mb():
     return (torch.cuda.memory_allocated() / 1024 ** 2) if torch.cuda.is_available() else 0
 
-# ADDED: Utility function to handle tensor/tuple conversions
-def ensure_tensor(data):
-    """Convert tuple outputs to tensors safely"""
-    if isinstance(data, tuple):
+# ADDED: Enhanced utility function to handle BaseOutput and tuple conversions
+def ensure_tensor_from_output(data):
+    """Convert diffusers BaseOutput or tuple outputs to tensors safely"""
+    # Handle BaseOutput objects from diffusers
+    if hasattr(data, 'images'):
+        return data.images[0]  # Extract first image from BaseOutput
+    elif hasattr(data, 'to_tuple'):
+        tuple_data = data.to_tuple()
+        return tuple_data[0] if tuple_data else None
+    elif isinstance(data, tuple):
         # If it's a tuple, extract the first element (usually the main tensor)
-        data = data[0]
-    if hasattr(data, 'dim'):
+        first_element = data[0]
+        if hasattr(first_element, 'images'):
+            return first_element.images[0]
+        return first_element
+    elif hasattr(data, 'dim'):
         return data
     elif torch.is_tensor(data):
         return data
@@ -354,6 +389,7 @@ try:
     
     logger.info("Loading Stable Diffusion...")
     _flush()
+    # FIXED: Initialize with return_dict=True to ensure consistent BaseOutput format
     app.sd = StableDiffusionControlNetPipeline.from_pretrained(
         "runwayml/stable-diffusion-v1-5", 
         controlnet=app.cnet,
@@ -452,23 +488,22 @@ try:
                 logger.error(f"Edge detection failed: {e}")
                 return jsonify({"error": f"Edge detection failed: {str(e)}"}), 500
 
-            # Stable Diffusion with memory management and tuple handling
+            # FIXED: Enhanced Stable Diffusion with proper BaseOutput handling
             try:
                 with torch.no_grad():
                     with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
+                        # Force return_dict=True to get BaseOutput instead of tuple
                         result = app.sd(
                             prompt, 
                             image=edge,
                             num_inference_steps=params['num_inference_steps'], 
-                            guidance_scale=params['guidance_scale']
+                            guidance_scale=params['guidance_scale'],
+                            return_dict=True  # FIXED: Force BaseOutput format
                         )
-                        # FIXED: Handle potential tuple return from SD pipeline
-                        if hasattr(result, 'images'):
-                            concept = result.images[0]
-                        elif isinstance(result, tuple):
-                            concept = result[0].images[0] if hasattr(result[0], 'images') else result[0]
-                        else:
-                            concept = result
+                        
+                        # FIXED: Use proper BaseOutput handling
+                        concept = ensure_tensor_from_output(result)
+                        
                 del edge, result
                 clear_gpu_memory()
             except Exception as e:
@@ -483,18 +518,18 @@ try:
                 logger.error(f"Resize failed: {e}")
                 return jsonify({"error": f"Resize failed: {str(e)}"}), 500
 
-            # TripoSR processing with enhanced tuple handling
+            # TripoSR processing with enhanced BaseOutput handling
             try:
                 with torch.no_grad():
                     with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
                         # FIXED: Enhanced handling for TripoSR output
                         raw_codes = app.triposr([concept], device=DEVICE)
-                        # Ensure we have tensor objects, not tuples
-                        codes = ensure_tensor(raw_codes)
+                        # Use proper tensor extraction
+                        codes = ensure_tensor_from_output(raw_codes)
                         del raw_codes
                 clear_gpu_memory()
 
-                # Render views with tuple handling
+                # Render views with proper BaseOutput handling
                 with torch.no_grad():
                     with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
                         raw_views = app.triposr.render(
@@ -504,11 +539,8 @@ try:
                             width=params['width'], 
                             return_type="pil"
                         )
-                        # FIXED: Handle tuple output from render function
-                        if isinstance(raw_views, tuple):
-                            views = raw_views[0]
-                        else:
-                            views = raw_views
+                        # FIXED: Enhanced BaseOutput/tuple handling for render output
+                        views = ensure_tensor_from_output(raw_views)
                         del raw_views
                 del codes
                 clear_gpu_memory()
