@@ -12,21 +12,10 @@ from contextlib import nullcontext
 import psutil
 import subprocess
 
-# Set CUDA memory management for better memory handling
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+# ENHANCED COMPATIBILITY PATCHES - Must come first
+import transformers
 
-# Logging setup (MOVED TO TOP to define logger early)
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('service.log')
-    ]
-)
-logger = logging.getLogger(__name__)
-
-# Mock classes for compatibility (with __call__ method added)
+# Mock cache classes for compatibility
 class MockCache:
     def __init__(self, *args, **kwargs):
         pass
@@ -37,8 +26,7 @@ class MockCache:
     def get_encoder_cache(self, *args, **kwargs):
         return self
     def __call__(self, *args, **kwargs):
-        # Dummy __call__ to fix 'no attribute __call__' error
-        return args[0] if args else None
+        return args if args else None
 
 class MockEncoderDecoderCache(MockCache):
     def __init__(self, *args, **kwargs):
@@ -50,62 +38,34 @@ class MockEncoderDecoderCache(MockCache):
     def decoder(self):
         return self
 
-# Robust marching cubes fallback (with proper error handling)
-logger.info("Setting up marching cubes fallback...")
-try:
-    import torchmcubes
-    logger.info("✅ Using torchmcubes")
-except ImportError:
-    logger.warning("torchmcubes not available, trying PyMCubes...")
-    try:
-        import PyMCubes
-        import types
-        import numpy as _np
-        import torch as _torch
-        
-        def _marching_cubes(vol: _torch.Tensor, thresh: float = 0.0):
-            v, f = PyMCubes.marching_cubes(vol.detach().cpu().numpy(), thresh)
-            return (_torch.from_numpy(v).to(vol.device, dtype=vol.dtype),
-                    _torch.from_numpy(f.astype(_np.int64)).to(vol.device))
-        
-        stub = types.ModuleType("torchmcubes")
-        stub.marching_cubes = _marching_cubes
-        sys.modules["torchmcubes"] = stub
-        logger.info("✅ Using PyMCubes fallback")
-    except ImportError:
-        logger.warning("PyMCubes not available, using scikit-image...")
-        try:
-            from skimage import measure
-            import types
-            import numpy as _np
-            import torch as _torch
-            
-            def _marching_cubes(vol: _torch.Tensor, thresh: float = 0.0):
-                verts, faces, _, _ = measure.marching_cubes(
-                    vol.detach().cpu().numpy(), level=thresh
-                )
-                return (_torch.from_numpy(verts).to(vol.device, dtype=vol.dtype),
-                        _torch.from_numpy(faces.astype(_np.int64)).to(vol.device))
-            
-            stub = types.ModuleType("torchmcubes")
-            stub.marching_cubes = _marching_cubes
-            sys.modules["torchmcubes"] = stub
-            logger.info("✅ Using scikit-image fallback")
-        except ImportError:
-            logger.error("❌ No marching cubes implementation available")
-            raise RuntimeError("No marching cubes library found")
+class MockHybridCache(MockCache):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
-# Compatibility patches
-import transformers
-for _n in ("Cache", "DynamicCache", "EncoderDecoderCache"):
-    if not hasattr(transformers, _n):
-        setattr(transformers, _n, MockEncoderDecoderCache)
+# Apply patches to transformers module
+for cache_name, cache_class in [
+    ("Cache", MockCache),
+    ("DynamicCache", MockCache),
+    ("EncoderDecoderCache", MockEncoderDecoderCache),
+    ("HybridCache", MockHybridCache)
+]:
+    if not hasattr(transformers, cache_name):
+        setattr(transformers, cache_name, cache_class)
 
+# Ensure patches are available in __init__ for PEFT
+transformers.__dict__.update({
+    'Cache': MockCache,
+    'DynamicCache': MockCache,
+    'EncoderDecoderCache': MockEncoderDecoderCache,
+    'HybridCache': MockHybridCache
+})
+
+# Additional patches for submodules
 try:
     import transformers.cache_utils as _tcu
-    for _n in ("Cache", "DynamicCache", "EncoderDecoderCache"):
-        if not hasattr(_tcu, _n):
-            setattr(_tcu, _n, MockEncoderDecoderCache)
+    for name, cls in [("Cache", MockCache), ("DynamicCache", MockCache), ("EncoderDecoderCache", MockEncoderDecoderCache)]:
+        if not hasattr(_tcu, name):
+            setattr(_tcu, name, cls)
 except ImportError:
     pass
 
@@ -116,6 +76,7 @@ try:
 except ImportError:
     pass
 
+# Continue with your existing compatibility patches
 import huggingface_hub as _hf_hub
 if not hasattr(_hf_hub, "cached_download"):
     _hf_hub.cached_download = _hf_hub.hf_hub_download
