@@ -1,48 +1,33 @@
-# Tested working versions for Google Colab
-torch==2.1.0+cu118
-torchvision==0.16.0+cu118
-torchaudio==2.1.0+cu118
---find-links https://download.pytorch.org/whl/torch_stable.html
+# ───────────────── PyTorch & CUDA ──────────────────
+torch==2.2.2+cu118
+torchvision==0.17.2+cu118
+torchaudio==2.2.2+cu118
+-f https://download.pytorch.org/whl/torch_stable.html
 
-# Core ML stack - JAX-free versions
-transformers==4.33.0
-diffusers==0.21.4
-accelerate==0.21.0
-huggingface_hub==0.17.0
-tokenizers==0.13.3
-safetensors==0.3.3
-regex==2023.6.3
-
-# ControlNet - JAX-free
+# ────────── Diffusers & Transformers Stack ───────────
+diffusers==0.27.2
+transformers==4.38.2
+accelerate==0.27.2
+huggingface-hub==0.20.3
 controlnet-aux==0.0.7
 
-# Core dependencies - No JAX
-numpy>=1.21.0,<1.25.0
-Pillow==9.5.0
-scipy==1.10.1
-einops==0.6.1
+# ────────── Core TripoSR Dependencies ────────────
+einops==0.7.0
 omegaconf==2.3.0
+scipy>=1.10.0,<1.12.0
 
-# TripoSR specific - PyTorch only
-trimesh==3.22.4
-imageio==2.31.1
-scikit-image==0.20.0
+# ─────────────── Image & Numerics ───────────────
+numpy>=1.23.0,<1.27.0
+Pillow>=9.5.0,<11.0.0
+opencv-python>=4.8.0
+imageio==2.34.0
 
-# Optional marching cubes - Pure Python/C++
-PyMCubes==0.1.6
+# ─────────────── API Server ───────────────
+Flask==3.0.3
+Flask-Cors==4.0.1
 
-# Background removal - No JAX dependencies
-rembg==2.0.50
+# ─────────────── System Monitoring ───────────────
+psutil>=5.9.0,<6.0.0
 
-# Computer Vision - OpenCV only
-opencv-python==4.8.0.76
-
-# Web server - Pure Python
-Flask==2.3.2
-Flask-Cors==4.0.0
-
-# System monitoring - No JAX
-psutil==5.9.5
-
-# HTTP requests - Standard library extensions
-requests==2.31.0
+# ─────────────── Testing ───────────────
+requests>=2.31.0,<3.0.0
