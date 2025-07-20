@@ -10,27 +10,18 @@ from functools import wraps
 from torch.cuda.amp import autocast
 from contextlib import nullcontext
 import psutil
-import subprocess  # For Git cloning
+import subprocess
 
 # Mock classes for compatibility
 class MockCache:
     def __init__(self, *args, **kwargs):
         pass
-
-    def __call__(self, attn, hidden_states, encoder_hidden_states=None, 
-                 attention_mask=None, temb=None, *args, **kwargs):
-        """Dummy __call__ method to mimic attention processor"""
-        return hidden_states  # Pass through unchanged to avoid errors
-
     def update(self, *args, **kwargs):
         pass
-
     def get_decoder_cache(self, *args, **kwargs):
         return self
-
     def get_encoder_cache(self, *args, **kwargs):
         return self
-
 
 class MockEncoderDecoderCache(MockCache):
     def __init__(self, *args, **kwargs):
@@ -76,7 +67,6 @@ diffusers.models.attention_processor.AttnProcessor2_0 = MockCache
 
 import transformers.models.llama.modeling_llama
 transformers.models.llama.modeling_llama.AttnProcessor2_0 = MockCache
-
 
 # Logging setup
 logging.basicConfig(
@@ -184,45 +174,115 @@ def sharpest(img_list):
     ]
     return img_list[int(np.argmax(scores))]
 
-# Robust marching cubes fallback (torchmcubes → PyMCubes → scikit-image)
-os.environ["TSR_DISABLE_TORCHMCUBES"] = "1"  # Force fallback
-
-try:
-    import torchmcubes
-    logger.info("✅ Using torchmcubes")
-except ImportError:
+# ROBUST MARCHING CUBES IMPLEMENTATION WITH MULTIPLE FALLBACKS
+def setup_marching_cubes():
+    """Setup marching cubes with robust fallback chain"""
+    
+    # Disable CUDA-only torchmcubes to force fallback
+    os.environ["TSR_DISABLE_TORCHMCUBES"] = "1"
+    
     try:
+        # First try: torchmcubes (if available and compiled with matching CUDA)
+        import torchmcubes
+        logger.info("✅ Using torchmcubes")
+        return True
+    except (ImportError, AttributeError) as e:
+        logger.warning(f"torchmcubes not available: {e}")
+    
+    try:
+        # Second try: PyMCubes
         import PyMCubes
         import types
         import numpy as _np
         import torch as _torch
         
         def _marching_cubes(vol: _torch.Tensor, thresh: float = 0.0):
+            """PyMCubes fallback for marching cubes"""
             v, f = PyMCubes.marching_cubes(vol.detach().cpu().numpy(), thresh)
             return (_torch.from_numpy(v).to(vol.device, dtype=vol.dtype),
                     _torch.from_numpy(f.astype(_np.int64)).to(vol.device))
         
+        # Create stub module
         stub = types.ModuleType("torchmcubes")
         stub.marching_cubes = _marching_cubes
         sys.modules["torchmcubes"] = stub
         logger.info("✅ Using PyMCubes fallback")
+        return True
+        
     except ImportError:
+        logger.warning("PyMCubes not available")
+    
+    try:
+        # Third try: scikit-image (most reliable)
         from skimage import measure
         import types
         import numpy as _np
         import torch as _torch
         
         def _marching_cubes(vol: _torch.Tensor, thresh: float = 0.0):
+            """Scikit-image fallback for marching cubes"""
             verts, faces, _, _ = measure.marching_cubes(
-                vol.detach().cpu().numpy(), level=thresh
+                vol.detach().cpu().numpy(), 
+                level=thresh
             )
             return (_torch.from_numpy(verts).to(vol.device, dtype=vol.dtype),
                     _torch.from_numpy(faces.astype(_np.int64)).to(vol.device))
         
+        # Create stub module
         stub = types.ModuleType("torchmcubes")
         stub.marching_cubes = _marching_cubes
         sys.modules["torchmcubes"] = stub
-        logger.info("✅ Using scikit-image fallback")
+        logger.info("✅ Using scikit-image marching cubes fallback")
+        return True
+        
+    except ImportError:
+        logger.error("❌ No marching cubes implementation available")
+        return False
+
+# Setup TripoSR path and imports
+def setup_triposr():
+    """Setup TripoSR with proper path handling"""
+    
+    # Add TripoSR path
+    triposr_path = "/content/mono3d/backend/TripoSR-main"
+    if triposr_path not in sys.path:
+        sys.path.insert(0, triposr_path)
+        logger.info(f"Added TripoSR path: {triposr_path}")
+    
+    # Alternative path for local development
+    alt_path = os.path.join(os.path.dirname(__file__), "TripoSR-main")
+    if alt_path not in sys.path and os.path.exists(alt_path):
+        sys.path.insert(0, alt_path)
+        logger.info(f"Added alternative TripoSR path: {alt_path}")
+    
+    try:
+        from tsr.system import TSR
+        from tsr.utils import resize_foreground, remove_background
+        logger.info("✅ TripoSR imported successfully")
+        return TSR, resize_foreground, remove_background
+    except ImportError as e:
+        logger.error(f"❌ Failed to import TripoSR: {e}")
+        
+        # Try to clone if in Colab
+        if 'google.colab' in sys.modules:
+            logger.info("Attempting to clone TripoSR from GitHub...")
+            try:
+                subprocess.run([
+                    "git", "clone", 
+                    "https://github.com/VAST-AI-Research/TripoSR.git", 
+                    triposr_path
+                ], check=True)
+                logger.info("TripoSR cloned successfully")
+                
+                # Retry import
+                from tsr.system import TSR
+                from tsr.utils import resize_foreground, remove_background
+                logger.info("✅ TripoSR imported after cloning")
+                return TSR, resize_foreground, remove_background
+            except Exception as clone_error:
+                logger.error(f"Failed to clone TripoSR: {clone_error}")
+        
+        raise
 
 print("Starting optimized service initialization …")
 try:
@@ -231,29 +291,17 @@ try:
     from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, EulerAncestralDiscreteScheduler
     from controlnet_aux import CannyDetector
 
-    # TripoSR path setup and Git clone if needed
-    logger.info("Setting up TripoSR from GitHub...")
-    triposr_path = os.path.join(os.path.dirname(__file__), "TripoSR-main")
-    if not os.path.exists(triposr_path):
-        logger.info("TripoSR-main not found. Cloning from GitHub...")
-        subprocess.run(["git", "clone", "https://github.com/VAST-AI-Research/TripoSR.git", triposr_path], check=True)
-        logger.info("✅ TripoSR cloned from GitHub")
+    # Setup marching cubes with fallbacks
+    if not setup_marching_cubes():
+        raise RuntimeError("No marching cubes implementation available")
 
-    if triposr_path not in sys.path:
-        sys.path.insert(0, triposr_path)
-
-    # Import TripoSR modules
-    try:
-        from tsr.system import TSR
-        from tsr.utils import resize_foreground, remove_background
-        logger.info("✅ TripoSR imported successfully")
-    except ImportError as e:
-        logger.error(f"❌ Failed to import TripoSR: {e}")
-        raise
+    # Setup TripoSR
+    TSR, resize_foreground, remove_background = setup_triposr()
 
     # Load TripoSR model
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"        
     logger.info(f"Loading TripoSR model on {DEVICE}...")
+    
     triposr_model = TSR.from_pretrained(
         "stabilityai/TripoSR",
         config_name="config.yaml", 
@@ -274,20 +322,21 @@ try:
             "gpu_mb": gpu_mem_mb(),
             "cpu_percent": psutil.cpu_percent(interval=None),
             "memory_percent": psutil.virtual_memory().percent,
-            "triposr_available": True
+            "triposr_available": True,
+            "device": DEVICE
         })
 
     # Test endpoint
     @app.route("/test", methods=["GET", "POST"])
     def test():
-        return jsonify({"message": "Optimized server is working!", "method": request.method})
+        return jsonify({"message": "TripoSR server is working!", "method": request.method})
 
     # Load models
     if DEVICE == "cuda":
         torch.backends.cudnn.benchmark = True
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
-        torch.cuda.set_per_process_memory_fraction(0.9)  # Use 90% of GPU memory
+        torch.cuda.set_per_process_memory_fraction(0.9)
 
     logger.info("Loading edge detector …")
     _flush()
@@ -312,15 +361,13 @@ try:
     except Exception:
         logger.warning("xformers not available — using plain attention")
     
-    # Optimized memory management
     app.sd.enable_model_cpu_offload()
     app.sd.enable_attention_slicing()
-    app.sd.enable_vae_slicing()  # Additional optimization
+    app.sd.enable_vae_slicing()
 
-    logger.info("Loading TripoSR locally…")
+    logger.info("Setting up TripoSR...")
     _flush()
-    app.last_concept_image = None
-
+    
     def ensure_module_on_device(module, target_device):
         """Helper function to ensure all tensors in a module are on the right device"""
         if module is None:
@@ -337,18 +384,15 @@ try:
                 continue
         return module
 
-    # Use the loaded TripoSR model
     app.triposr = triposr_model
-
-    # Ensure everything is on the correct device
     app.triposr = ensure_module_on_device(app.triposr, DEVICE)
+    
     if hasattr(app.triposr, 'renderer'):
         app.triposr.renderer = ensure_module_on_device(app.triposr.renderer, DEVICE)
         if hasattr(app.triposr.renderer, 'triplane'):
             app.triposr.renderer.triplane = app.triposr.renderer.triplane.to(DEVICE)
 
     if DEVICE == "cuda":
-        # Convert to half precision if using CUDA
         app.triposr = app.triposr.half()
         if hasattr(app.triposr, 'renderer'):
             app.triposr.renderer = app.triposr.renderer.half()
@@ -357,7 +401,7 @@ try:
     logger.info(f"TripoSR loaded on {DEVICE}")
     _flush()
 
-    logger.info("✅ Optimized models ready")
+    logger.info("✅ All models ready")
     _flush()
 
     # ───────────── Optimized /generate endpoint ─────────────
@@ -376,31 +420,26 @@ try:
             cached_result = result_cache.get(cache_key)
             if cached_result:
                 logger.info("Returning cached result")
-                return send_file(
-                    cached_result,
-                    as_attachment=True,
-                    download_name='3d_model.zip',
-                    mimetype='application/zip'
-                )
+                cached_result.seek(0)
+                return send_file(cached_result, mimetype="image/png", download_name="3d_render.png", as_attachment=True)
 
             # Decode input image
             try:
                 png = base64.b64decode(data["sketch"].split(",", 1)[1])
                 pil = Image.open(io.BytesIO(png)).convert("RGBA")
+                logger.info(f"Decoded sketch: {pil.size}")
             except Exception as e:
                 return jsonify({"error": f"Bad image data: {str(e)}"}), 400
 
-            prompt = data.get("prompt", "a clean 3‑D asset")
-
-            # Get parameters - use optimization parameter logic
+            prompt = data.get("prompt", "a clean 3-D asset")
             params = OptimizedParameters.get_optimized_params(data)
-            logger.info(f"Using generation parameters: {params}")
+            logger.info(f"Processing prompt: '{prompt}'")
 
-            # A) Edge detection (optimized)
+            # Edge detection
             edge = app.edge_det(pil)
             del pil
 
-            # B) Stable Diffusion with optimized parameters
+            # Stable Diffusion
             with torch.no_grad():
                 concept = app.sd(
                     prompt, image=edge,
@@ -410,26 +449,23 @@ try:
             del edge
             clear_gpu_memory()
 
-            # C) Scene codes - use same device as model
+            # Resize foreground for TripoSR
+            concept = resize_foreground(concept, 1.0)
+
+            # TripoSR scene generation
             with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
                 codes = app.triposr([concept], device=DEVICE)
-                logger.info(f"Codes device: {codes.device}")
-
-                # Re-ensure renderer is on correct device
-                if hasattr(app.triposr, 'renderer'):
-                    app.triposr.renderer = ensure_module_on_device(app.triposr.renderer, codes.device)
             clear_gpu_memory()
 
-            # D) Render views
+            # Render 4 views and select sharpest
             with torch.no_grad():
                 with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
-                    views = app.triposr.render(codes, n_views=params.get('n_views', 4), height=params['height'], width=params['width'], return_type="pil")[0]
+                    views = app.triposr.render(codes, n_views=4, height=512, width=512, return_type="pil")[0]
+            
+            final_image = sharpest(views)
             clear_gpu_memory()
 
-            # E) Select sharpest view
-            final_image = sharpest(views)
-
-            # F) Return PNG image
+            # Return PNG image
             buf = io.BytesIO()
             final_image.save(buf, "PNG")
             buf.seek(0)
@@ -437,14 +473,8 @@ try:
             # Cache the result
             result_cache.put(cache_key, io.BytesIO(buf.getvalue()))
 
-            clear_gpu_memory()
             _flush()
-            return send_file(
-                buf,
-                as_attachment=True,
-                download_name='3d_render.png',
-                mimetype='image/png'
-            )
+            return send_file(buf, mimetype="image/png", download_name="3d_render.png", as_attachment=True)
 
         except Exception as e:
             logger.error("Error in /generate", exc_info=True)
@@ -453,6 +483,7 @@ try:
             return jsonify({"error": str(e)}), 500
 
     if __name__ == "__main__":
+        logger.info("🚀 Starting TripoSR service")
         app.run(host="0.0.0.0", port=5000)
 
 except Exception:
