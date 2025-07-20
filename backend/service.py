@@ -11,7 +11,6 @@ from torch.cuda.amp import autocast
 from contextlib import nullcontext
 import psutil
 import subprocess
-import torchvision.transforms as transforms
 
 # ENHANCED COMPATIBILITY PATCHES - Must come first
 import transformers
@@ -209,9 +208,9 @@ def safe_resize_foreground(image, ratio=1.0):
         logger.info("Returning original image as fallback")
         return image
 
-# FIXED: Alternative approach - Skip complex TripoSR preprocessing and use direct tensor conversion
-def convert_image_to_triposr_tensor(pil_image, device):
-    """Convert PIL Image to tensor format compatible with TripoSR"""
+# FIXED: Correct TripoSR input format - 5D tensor with format (B, Nv, H, W, C)
+def prepare_triposr_input_tensor(pil_image, device):
+    """Convert PIL Image to the exact 5D tensor format TripoSR expects"""
     try:
         # Ensure RGB format
         if pil_image.mode != 'RGB':
@@ -224,23 +223,27 @@ def convert_image_to_triposr_tensor(pil_image, device):
                 pil_image = pil_image.convert('RGB')
             logger.info("✅ Converted to RGB format")
         
-        # Resize to optimal size for TripoSR
-        if pil_image.size != (512, 512):
-            pil_image = pil_image.resize((512, 512), Image.Resampling.LANCZOS)
-            logger.info("✅ Resized to 512x512")
+        # Resize to optimal size for TripoSR (use 256x256 for better memory efficiency)
+        target_size = 256
+        if pil_image.size != (target_size, target_size):
+            pil_image = pil_image.resize((target_size, target_size), Image.Resampling.LANCZOS)
+            logger.info(f"✅ Resized to {target_size}x{target_size}")
         
-        # Convert PIL to numpy
+        # Convert PIL to numpy array
         img_array = np.array(pil_image).astype(np.float32) / 255.0
         
-        # Convert to tensor and rearrange dimensions
-        tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0)  # HWC -> BCHW
+        # FIXED: Create 5D tensor with format (B=1, Nv=1, H, W, C=3) - HWC format as expected by einops
+        tensor = torch.from_numpy(img_array)  # Shape: (H, W, C)
+        tensor = tensor.unsqueeze(0).unsqueeze(0)  # Add batch and view dimensions: (1, 1, H, W, C)
         tensor = tensor.to(device)
         
-        logger.info(f"✅ PIL Image converted to tensor: {tensor.shape}, dtype: {tensor.dtype}")
+        logger.info(f"✅ Created TripoSR 5D tensor: {tensor.shape}, dtype: {tensor.dtype}")
+        logger.info(f"   Expected format: (Batch=1, Views=1, Height={target_size}, Width={target_size}, Channels=3)")
+        
         return tensor
         
     except Exception as e:
-        logger.error(f"Image to tensor conversion failed: {e}")
+        logger.error(f"TripoSR tensor preparation failed: {e}")
         raise
 
 class OptimizedParameters:
@@ -568,18 +571,18 @@ try:
                 logger.error(f"All resize methods failed: {e}")
                 return jsonify({"error": f"Resize failed: {str(e)}"}), 500
 
-            # FIXED: TripoSR processing with direct tensor conversion
+            # FIXED: TripoSR processing with correct 5D tensor format
             try:
-                # Convert PIL Image to tensor that TripoSR can understand
-                concept_tensor = convert_image_to_triposr_tensor(concept, DEVICE)
+                # Create the exact 5D tensor format TripoSR expects
+                triposr_tensor = prepare_triposr_input_tensor(concept, DEVICE)
                 
                 with torch.no_grad():
                     with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
-                        logger.info("Calling TripoSR with tensor input")
-                        # Pass tensor directly to TripoSR
-                        raw_codes = app.triposr(concept_tensor, device=DEVICE)
+                        logger.info(f"Calling TripoSR with 5D tensor: {triposr_tensor.shape}")
+                        # Pass the correctly formatted 5D tensor to TripoSR
+                        raw_codes = app.triposr(triposr_tensor, device=DEVICE)
                         codes = ensure_tensor_from_output(raw_codes)
-                        del raw_codes, concept_tensor
+                        del raw_codes, triposr_tensor
                 clear_gpu_memory()
 
                 # Render views
