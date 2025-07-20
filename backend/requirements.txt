@@ -1,33 +1,45 @@
-# ───────────────── PyTorch & CUDA ──────────────────
+# ────────── PyTorch & CUDA 11.8 ──────────
 torch==2.2.2+cu118
 torchvision==0.17.2+cu118
 torchaudio==2.2.2+cu118
 -f https://download.pytorch.org/whl/torch_stable.html
 
-# ────────── Diffusers & Transformers Stack ───────────
+# ────────── Diffusers / Transformers stack ──────────
 diffusers==0.27.2
 transformers==4.38.2
 accelerate==0.27.2
-huggingface-hub==0.25.1
+peft==0.9.0
+huggingface-hub==0.20.3
 controlnet-aux==0.0.7
 
-# ────────── Core TripoSR Dependencies ────────────
+# ────────── 3-D / TripoSR stack ──────────
 einops==0.7.0
 omegaconf==2.3.0
+trimesh==4.4.0
 scipy>=1.10.0,<1.12.0
+PyMCubes==0.1.4          # pure-Python marching cubes
+xatlas==0.0.10
 
-# ─────────────── Image & Numerics ───────────────
+# ────────── Imaging & numerics ──────────
 numpy>=1.23.0,<1.27.0
 Pillow>=9.5.0,<11.0.0
-opencv-python>=4.8.0
+timm==0.9.16
 imageio==2.34.0
+imageio-ffmpeg>=0.4.8
 
-# ─────────────── API Server ───────────────
+# ────────── Background removal ──────────
+rembg>=2.0.53,<3.0.0
+onnxruntime>=1.16.0,<2.0.0
+
+# ────────── API server ──────────
 Flask==3.0.3
 Flask-Cors==4.0.1
 
-# ─────────────── System Monitoring ───────────────
+# ────────── System monitoring ──────────
 psutil>=5.9.0,<6.0.0
 
-# ─────────────── Testing ───────────────
+# ────────── HTTP utilities ──────────
 requests>=2.31.0,<3.0.0
+
+# Optional: Gradio UI
+# gradio>=4.0.0,<5.0.0
