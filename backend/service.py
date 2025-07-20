@@ -91,6 +91,17 @@ diffusers.models.attention_processor.AttnProcessor2_0 = MockCache
 import transformers.models.llama.modeling_llama
 transformers.models.llama.modeling_llama.AttnProcessor2_0 = MockCache
 
+# ADD THIS LOGGING SETUP SECTION
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('service.log')
+    ]
+)
+logger = logging.getLogger(__name__)
+
 def timing(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
@@ -177,6 +188,44 @@ def sharpest(img_list):
         for i in img_list
     ]
     return img_list[int(np.argmax(scores))]
+
+# Robust marching cubes fallback
+try:
+    import torchmcubes
+    logger.info("✅ Using torchmcubes")
+except ImportError:
+    try:
+        import PyMCubes
+        import types
+        import numpy as _np
+        import torch as _torch
+        
+        def _marching_cubes(vol: _torch.Tensor, thresh: float = 0.0):
+            v, f = PyMCubes.marching_cubes(vol.detach().cpu().numpy(), thresh)
+            return (_torch.from_numpy(v).to(vol.device, dtype=vol.dtype),
+                    _torch.from_numpy(f.astype(_np.int64)).to(vol.device))
+        
+        stub = types.ModuleType("torchmcubes")
+        stub.marching_cubes = _marching_cubes
+        sys.modules["torchmcubes"] = stub
+        logger.info("✅ Using PyMCubes fallback")
+    except ImportError:
+        from skimage import measure
+        import types
+        import numpy as _np
+        import torch as _torch
+        
+        def _marching_cubes(vol: _torch.Tensor, thresh: float = 0.0):
+            verts, faces, _, _ = measure.marching_cubes(
+                vol.detach().cpu().numpy(), level=thresh
+            )
+            return (_torch.from_numpy(verts).to(vol.device, dtype=vol.dtype),
+                    _torch.from_numpy(faces.astype(_np.int64)).to(vol.device))
+        
+        stub = types.ModuleType("torchmcubes")
+        stub.marching_cubes = _marching_cubes
+        sys.modules["torchmcubes"] = stub
+        logger.info("✅ Using scikit-image fallback")
 
 print("Starting memory-optimized service initialization...")
 try:
