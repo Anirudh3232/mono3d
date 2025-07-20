@@ -212,37 +212,55 @@ def safe_resize_foreground(image, ratio=1.0):
         logger.info("Returning original image as fallback")
         return image
 
-# FIXED: Proper image preparation for TripoSR
+# FIXED: Proper image preparation with RGBA to RGB conversion
 def prepare_image_for_triposr(pil_image):
-    """Prepare PIL image for TripoSR processing"""
+    """Prepare PIL image for TripoSR processing with proper RGB conversion"""
     try:
-        # Ensure we have an RGBA image
-        if pil_image.mode != 'RGBA':
-            pil_image = pil_image.convert('RGBA')
+        # FIXED: Convert RGBA to RGB properly
+        if pil_image.mode == 'RGBA':
+            # Create a white background image
+            white_background = Image.new('RGB', pil_image.size, (255, 255, 255))
+            # Paste the RGBA image onto the white background using alpha channel
+            white_background.paste(pil_image, mask=pil_image.split()[-1])  # Use alpha channel as mask
+            pil_image = white_background
+            logger.info("✅ Converted RGBA to RGB with white background")
+        elif pil_image.mode != 'RGB':
+            # Convert any other mode to RGB
+            pil_image = pil_image.convert('RGB')
+            logger.info(f"✅ Converted {pil_image.mode} to RGB")
         
         # TripoSR typically expects square images
         width, height = pil_image.size
         if width != height:
             # Make it square by padding with white background
             max_size = max(width, height)
-            new_image = Image.new('RGBA', (max_size, max_size), (255, 255, 255, 255))
+            new_image = Image.new('RGB', (max_size, max_size), (255, 255, 255))
             paste_x = (max_size - width) // 2
             paste_y = (max_size - height) // 2
             new_image.paste(pil_image, (paste_x, paste_y))
             pil_image = new_image
+            logger.info(f"✅ Made image square: {max_size}x{max_size}")
         
         # Resize to a size that TripoSR can handle efficiently
         target_size = 256  # Smaller size for memory efficiency
         if pil_image.size[0] != target_size:
             pil_image = pil_image.resize((target_size, target_size), Image.Resampling.LANCZOS)
-            logger.info(f"Resized image to {target_size}x{target_size} for TripoSR")
+            logger.info(f"✅ Resized image to {target_size}x{target_size} for TripoSR")
         
         logger.info(f"✅ Image prepared for TripoSR: {pil_image.size}, mode: {pil_image.mode}")
         return pil_image
         
     except Exception as e:
         logger.error(f"Image preparation failed: {e}")
-        return pil_image  # Return original on error
+        # Fallback: try basic RGB conversion
+        try:
+            if pil_image.mode != 'RGB':
+                pil_image = pil_image.convert('RGB')
+                logger.info("✅ Fallback RGB conversion successful")
+            return pil_image
+        except Exception as fallback_error:
+            logger.error(f"Fallback conversion failed: {fallback_error}")
+            return pil_image
 
 class OptimizedParameters:
     """Memory-optimized parameters to prevent CUDA OOM"""
@@ -296,7 +314,7 @@ def sharpest(img_list):
     try:
         import cv2
         scores = [
-            cv2.Laplacian(cv2.cvtColor(np.array(i), cv2.COLOR_RGBA2GRAY), cv2.CV_64F).var()
+            cv2.Laplacian(cv2.cvtColor(np.array(i), cv2.COLOR_RGB2GRAY), cv2.CV_64F).var()
             for i in img_list
         ]
         return img_list[int(np.argmax(scores))]
@@ -583,15 +601,14 @@ try:
                 logger.error(f"All resize methods failed: {e}")
                 return jsonify({"error": f"Resize failed: {str(e)}"}), 500
 
-            # FIXED: TripoSR processing with proper PIL Image handling
+            # FIXED: TripoSR processing with proper RGB conversion
             try:
-                # Prepare the image properly for TripoSR
+                # Prepare the image properly for TripoSR (RGBA → RGB conversion)
                 concept_prepared = prepare_image_for_triposr(concept)
                 
                 with torch.no_grad():
                     with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
-                        # FIXED: Pass PIL Image directly in a list (TripoSR's expected format)
-                        logger.info("Calling TripoSR with prepared PIL image")
+                        logger.info("Calling TripoSR with RGB prepared PIL image")
                         raw_codes = app.triposr([concept_prepared], device=DEVICE)
                         codes = ensure_tensor_from_output(raw_codes)
                         del raw_codes, concept_prepared
