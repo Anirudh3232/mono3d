@@ -107,7 +107,7 @@ def clear_gpu_memory():
         else:
             clear_gpu_memory._gc_counter = 0
         
-        if clear_gpu_memory._gc_counter % 3 == 0:
+        if clear_gpu_memory._gc_counter % 3 == 0:  # Run GC every 3rd call
             gc.collect()
 
 def gpu_mem_mb():
@@ -116,8 +116,10 @@ def gpu_mem_mb():
 class OptimizedParameters:
     """Optimized default parameters to reduce CPU usage"""
     
-    DEFAULT_INFERENCE_STEPS = 30
-    DEFAULT_GUIDANCE_SCALE = 7.5
+    DEFAULT_INFERENCE_STEPS = 30  # Reduced from 63
+    DEFAULT_GUIDANCE_SCALE = 7.5  # Reduced from 9.96 for faster convergence
+    
+    # Optimized render parameters
     DEFAULT_N_VIEWS = 4
     DEFAULT_HEIGHT = 512
     DEFAULT_WIDTH = 512
@@ -143,6 +145,7 @@ class ResultCache:
     
     def get(self, key):
         if key in self.cache:
+            # Move to end of access order
             if key in self.access_order:
                 self.access_order.remove(key)
             self.access_order.append(key)
@@ -151,6 +154,7 @@ class ResultCache:
     
     def put(self, key, value):
         if len(self.cache) >= self.max_size:
+            # Remove least recently used
             lru_key = self.access_order.pop(0)
             del self.cache[lru_key]
         
@@ -169,6 +173,46 @@ def sharpest(img_list):
         for i in img_list
     ]
     return img_list[int(np.argmax(scores))]
+
+# Robust marching cubes fallback (torchmcubes → PyMCubes → scikit-image)
+os.environ["TSR_DISABLE_TORCHMCUBES"] = "1"  # Force fallback
+
+try:
+    import torchmcubes
+    logger.info("✅ Using torchmcubes")
+except ImportError:
+    try:
+        import PyMCubes
+        import types
+        import numpy as _np
+        import torch as _torch
+        
+        def _marching_cubes(vol: _torch.Tensor, thresh: float = 0.0):
+            v, f = PyMCubes.marching_cubes(vol.detach().cpu().numpy(), thresh)
+            return (_torch.from_numpy(v).to(vol.device, dtype=vol.dtype),
+                    _torch.from_numpy(f.astype(_np.int64)).to(vol.device))
+        
+        stub = types.ModuleType("torchmcubes")
+        stub.marching_cubes = _marching_cubes
+        sys.modules["torchmcubes"] = stub
+        logger.info("✅ Using PyMCubes fallback")
+    except ImportError:
+        from skimage import measure
+        import types
+        import numpy as _np
+        import torch as _torch
+        
+        def _marching_cubes(vol: _torch.Tensor, thresh: float = 0.0):
+            verts, faces, _, _ = measure.marching_cubes(
+                vol.detach().cpu().numpy(), level=thresh
+            )
+            return (_torch.from_numpy(verts).to(vol.device, dtype=vol.dtype),
+                    _torch.from_numpy(faces.astype(_np.int64)).to(vol.device))
+        
+        stub = types.ModuleType("torchmcubes")
+        stub.marching_cubes = _marching_cubes
+        sys.modules["torchmcubes"] = stub
+        logger.info("✅ Using scikit-image fallback")
 
 print("Starting optimized service initialization …")
 try:
@@ -202,7 +246,7 @@ try:
     logger.info(f"Loading TripoSR model on {DEVICE}...")
     triposr_model = TSR.from_pretrained(
         "stabilityai/TripoSR",
-        config_name="config.yaml",
+        config_name="config.yaml", 
         weight_name="model.ckpt"
     )
     triposr_model.to(DEVICE)
@@ -261,7 +305,7 @@ try:
     # Optimized memory management
     app.sd.enable_model_cpu_offload()
     app.sd.enable_attention_slicing()
-    app.sd.enable_vae_slicing()
+    app.sd.enable_vae_slicing()  # Additional optimization
 
     logger.info("Loading TripoSR locally…")
     _flush()
@@ -325,8 +369,8 @@ try:
                 return send_file(
                     cached_result,
                     as_attachment=True,
-                    download_name='3d_model.png',
-                    mimetype='image/png'
+                    download_name='3d_model.zip',
+                    mimetype='application/zip'
                 )
 
             # Decode input image
@@ -336,9 +380,9 @@ try:
             except Exception as e:
                 return jsonify({"error": f"Bad image data: {str(e)}"}), 400
 
-            prompt = data.get("prompt", "a clean 3-D asset")
+            prompt = data.get("prompt", "a clean 3‑D asset")
 
-            # Get parameters
+            # Get parameters - use optimization parameter logic
             params = OptimizedParameters.get_optimized_params(data)
             logger.info(f"Using generation parameters: {params}")
 
@@ -369,7 +413,7 @@ try:
             # D) Render views
             with torch.no_grad():
                 with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
-                    views = app.triposr.render(codes, n_views=params['n_views'], height=params['height'], width=params['width'], return_type="pil")[0]
+                    views = app.triposr.render(codes, n_views=params.get('n_views', 4), height=params['height'], width=params['width'], return_type="pil")[0]
             clear_gpu_memory()
 
             # E) Select sharpest view
