@@ -23,7 +23,7 @@ opencv-python>=4.8.0
 imageio==2.34.0
 
 # ─────────────── Marching Cubes Fallbacks ───────────────
-pip install PyMCubes==0.1.4
+PyMCubes==0.1.4
 scikit-image==0.22.0
 
 
