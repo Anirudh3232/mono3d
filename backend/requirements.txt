@@ -11,7 +11,7 @@ accelerate==0.27.2
 huggingface-hub==0.25.1
 controlnet-aux==0.0.7
 
-# ────────── Core TripoSR Dependencies ────────────
+# ────────── TripoSR Dependencies ────────────
 einops==0.7.0
 omegaconf==2.3.0
 scipy>=1.10.0,<1.12.0
@@ -21,6 +21,10 @@ numpy>=1.23.0,<1.27.0
 Pillow>=9.5.0,<11.0.0
 opencv-python>=4.8.0
 imageio==2.34.0
+
+# ─────────────── Marching Cubes Fallbacks ───────────────
+scikit-image==0.22.0  # Primary fallback for marching cubes
+PyMCubes==0.1.6       # Optional fallback (may fail in some environments)
 
 # ─────────────── API Server ───────────────
 Flask==3.0.3
