@@ -16,12 +16,21 @@ import subprocess  # For Git cloning
 class MockCache:
     def __init__(self, *args, **kwargs):
         pass
+
+    def __call__(self, attn, hidden_states, encoder_hidden_states=None, 
+                 attention_mask=None, temb=None, *args, **kwargs):
+        """Dummy __call__ method to mimic attention processor"""
+        return hidden_states  # Pass through unchanged to avoid errors
+
     def update(self, *args, **kwargs):
         pass
+
     def get_decoder_cache(self, *args, **kwargs):
         return self
+
     def get_encoder_cache(self, *args, **kwargs):
         return self
+
 
 class MockEncoderDecoderCache(MockCache):
     def __init__(self, *args, **kwargs):
@@ -67,6 +76,7 @@ diffusers.models.attention_processor.AttnProcessor2_0 = MockCache
 
 import transformers.models.llama.modeling_llama
 transformers.models.llama.modeling_llama.AttnProcessor2_0 = MockCache
+
 
 # Logging setup
 logging.basicConfig(
