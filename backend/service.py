@@ -192,6 +192,45 @@ def ensure_tensor_from_output(data):
         # Convert to tensor if it's not already one
         return torch.tensor(data) if not isinstance(data, torch.Tensor) else data
 
+# ADDED: Safe resize function with better error handling
+def safe_resize_foreground(image, ratio=1.0):
+    """Safely resize image with comprehensive error handling"""
+    try:
+        # Validate input
+        if image is None:
+            raise ValueError("Input image is None")
+        
+        if not isinstance(image, Image.Image):
+            raise ValueError(f"Expected PIL Image, got {type(image)}")
+        
+        # If ratio is 1.0, return original image
+        if ratio == 1.0:
+            logger.info("Resize ratio is 1.0, returning original image")
+            return image
+        
+        # Get original dimensions
+        width, height = image.size
+        logger.info(f"Original image size: {width}x{height}")
+        
+        # Calculate new dimensions
+        new_width = int(width * ratio)
+        new_height = int(height * ratio)
+        
+        # Ensure minimum size
+        new_width = max(new_width, 64)
+        new_height = max(new_height, 64)
+        
+        logger.info(f"Resizing to: {new_width}x{new_height}")
+        
+        # Perform resize
+        resized = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        return resized
+        
+    except Exception as e:
+        logger.error(f"Safe resize failed: {str(e)}")
+        logger.info("Returning original image as fallback")
+        return image  # Return original on error
+
 class OptimizedParameters:
     """Memory-optimized parameters to prevent CUDA OOM"""
     
@@ -504,18 +543,40 @@ try:
                         # FIXED: Use proper BaseOutput handling
                         concept = ensure_tensor_from_output(result)
                         
+                        # ADDED: Validate concept before proceeding
+                        if concept is None:
+                            raise ValueError("Stable Diffusion returned None concept")
+                        
+                        logger.info(f"Concept type: {type(concept)}, size: {concept.size if hasattr(concept, 'size') else 'unknown'}")
+                        
                 del edge, result
                 clear_gpu_memory()
             except Exception as e:
                 logger.error(f"Stable Diffusion failed: {e}")
                 return jsonify({"error": f"Stable Diffusion failed: {str(e)}"}), 500
 
-            # Resize concept if needed
+            # FIXED: Enhanced resize with better error handling and fallback
             try:
-                concept = resize_foreground(concept, 1.0)
+                logger.info(f"About to resize concept: {type(concept)}")
+                
+                # Use the TripoSR resize_foreground function with fallback
+                try:
+                    concept = resize_foreground(concept, 1.0)
+                    logger.info("✅ TripoSR resize_foreground successful")
+                except Exception as resize_error:
+                    logger.warning(f"TripoSR resize_foreground failed: {resize_error}")
+                    logger.info("🔄 Falling back to safe_resize_foreground")
+                    concept = safe_resize_foreground(concept, 1.0)
+                
+                # Final validation
+                if concept is None:
+                    raise ValueError("Concept is None after resize")
+                    
                 clear_gpu_memory()
+                logger.info("✅ Resize completed successfully")
+                
             except Exception as e:
-                logger.error(f"Resize failed: {e}")
+                logger.error(f"All resize methods failed: {e}")
                 return jsonify({"error": f"Resize failed: {str(e)}"}), 500
 
             # TripoSR processing with enhanced BaseOutput handling
