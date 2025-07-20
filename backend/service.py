@@ -264,13 +264,13 @@ def preprocess_image_for_triposr(input_image, do_remove_background=True, foregro
 class QualityOptimizedParameters:
     """Quality-optimized parameters for maximum output quality"""
     
-    # Quality-focused settings (higher than previous memory-optimized versions)
-    DEFAULT_INFERENCE_STEPS = 25    # Increased for quality
-    DEFAULT_GUIDANCE_SCALE = 7.5    # Standard quality setting
-    DEFAULT_N_VIEWS = 4             # More views for better selection
-    DEFAULT_HEIGHT = 512           # Higher resolution for quality
-    DEFAULT_WIDTH = 512            # Higher resolution for quality
-    DEFAULT_MC_RESOLUTION = 256    # Marching cubes resolution
+    # Quality-focused settings
+    DEFAULT_INFERENCE_STEPS = 25
+    DEFAULT_GUIDANCE_SCALE = 7.5
+    DEFAULT_N_VIEWS = 4
+    DEFAULT_HEIGHT = 512
+    DEFAULT_WIDTH = 512
+    DEFAULT_MC_RESOLUTION = 256
     
     @classmethod
     def get_quality_params(cls, data):
@@ -284,7 +284,7 @@ class QualityOptimizedParameters:
         }
 
 class ResultCache:
-    def __init__(self, max_size=3):  # Reduced cache size for quality processing
+    def __init__(self, max_size=3):
         self.cache = {}
         self.max_size = max_size
         self.access_order = []
@@ -404,7 +404,6 @@ try:
         torch.backends.cudnn.benchmark = True
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
-        # Increased memory fraction for quality processing
         torch.cuda.set_per_process_memory_fraction(0.9)
 
     # FIXED: Load TripoSR in FULL FLOAT32 PRECISION for maximum quality
@@ -415,11 +414,10 @@ try:
     )
     
     triposr_model.to(DEVICE)
-    # REMOVED: No half precision conversion - keep full float32 for quality
     triposr_model.eval()
     
     # Set optimal chunk size for quality processing
-    triposr_model.renderer.set_chunk_size(8192)  # Balanced for quality and memory
+    triposr_model.renderer.set_chunk_size(8192)
     
     clear_gpu_memory()
     logger.info("✅ TripoSR loaded in FLOAT32 for maximum quality")
@@ -452,7 +450,7 @@ try:
     _flush()
     app.cnet = ControlNetModel.from_pretrained(
         "lllyasviel/sd-controlnet-canny", 
-        torch_dtype=torch.float16  # Keep half precision for Stable Diffusion
+        torch_dtype=torch.float16
     ).to(DEVICE)
     
     logger.info("Loading Stable Diffusion...")
@@ -460,7 +458,7 @@ try:
     app.sd = StableDiffusionControlNetPipeline.from_pretrained(
         "runwayml/stable-diffusion-v1-5", 
         controlnet=app.cnet,
-        torch_dtype=torch.float16  # Keep half precision for Stable Diffusion
+        torch_dtype=torch.float16
     ).to(DEVICE)
     
     app.sd.scheduler = EulerAncestralDiscreteScheduler.from_config(app.sd.scheduler.config)
@@ -550,7 +548,7 @@ try:
                 logger.error(f"Edge detection failed: {e}")
                 return jsonify({"error": f"Edge detection failed: {str(e)}"}), 500
 
-            # Stable Diffusion (keeps half precision as it handles it well)
+            # Stable Diffusion
             try:
                 with torch.no_grad():
                     with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
@@ -597,7 +595,7 @@ try:
                 logger.error(f"All resize methods failed: {e}")
                 return jsonify({"error": f"Resize failed: {str(e)}"}), 500
 
-            # FIXED: TripoSR processing in FLOAT32 using official approach
+            # FIXED: TripoSR processing with correct extract_mesh parameters
             try:
                 # Preprocess image using official TripoSR methods
                 processed_image = preprocess_image_for_triposr(
@@ -607,14 +605,12 @@ try:
                 )
                 
                 with torch.no_grad():
-                    # Use official TripoSR call pattern - float32 precision maintained
                     logger.info("Calling TripoSR with float32 precision for maximum quality")
                     scene_codes = app.triposr(processed_image, device=DEVICE)
                     
-                    # Extract mesh with quality settings
+                    # FIXED: Extract mesh with only valid parameters
                     mesh = app.triposr.extract_mesh(
                         scene_codes, 
-                        has_vertex_color=True,  # Enable vertex colors for quality
                         resolution=params['mc_resolution']
                     )[0]
                     
@@ -625,11 +621,11 @@ try:
                     
                 clear_gpu_memory()
 
-                # Generate multiple high-quality views for selection
+                # Generate high-quality views for selection
                 try:
                     with torch.no_grad():
                         # Create temporary scene codes for rendering
-                        temp_scene_codes = app.triposr([concept], device=DEVICE)
+                        temp_scene_codes = app.triposr(concept, device=DEVICE)
                         
                         # Render multiple views for quality selection
                         rendered_views = app.triposr.render(
@@ -669,7 +665,6 @@ try:
             # Return high-quality result
             try:
                 buf = io.BytesIO()
-                # Save at maximum quality
                 final_image.save(buf, "PNG", optimize=False, compress_level=1)
                 buf.seek(0)
 
