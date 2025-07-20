@@ -11,6 +11,7 @@ from torch.cuda.amp import autocast
 from contextlib import nullcontext
 import psutil
 import subprocess
+import torchvision.transforms as transforms
 
 # ENHANCED COMPATIBILITY PATCHES - Must come first
 import transformers
@@ -30,27 +31,23 @@ class MockCache:
         return self
     
     def __call__(self, *args, **kwargs):
-        # FIXED: Return first argument if it's a tensor, otherwise return None
         if args:
             first_arg = args[0]
-            if hasattr(first_arg, 'dim'):  # It's a tensor
+            if hasattr(first_arg, 'dim'):
                 return first_arg
             return args[0] if len(args) == 1 else args
         return None
     
-    # ADDED: Handle attention processor methods
     def forward(self, *args, **kwargs):
         if args:
             return args[0]
         return None
 
-# ADDED: Proper attention processor mock
 class MockAttentionProcessor:
     def __init__(self):
         pass
     
     def __call__(self, attn, hidden_states, encoder_hidden_states=None, attention_mask=None, **kwargs):
-        # Return hidden_states directly for attention processing
         return hidden_states
 
 class MockEncoderDecoderCache(MockCache):
@@ -77,7 +74,6 @@ for cache_name, cache_class in [
     if not hasattr(transformers, cache_name):
         setattr(transformers, cache_name, cache_class)
 
-# Ensure patches are available in __init__ for PEFT
 transformers.__dict__.update({
     'Cache': MockCache,
     'DynamicCache': MockCache,
@@ -101,7 +97,6 @@ try:
 except ImportError:
     pass
 
-# Continue with existing compatibility patches
 try:
     import huggingface_hub as _hf_hub
     if not hasattr(_hf_hub, "cached_download"):
@@ -116,7 +111,6 @@ try:
 except ImportError:
     pass
 
-# FIXED: Use proper MockAttentionProcessor instead of MockCache
 try:
     import diffusers.models.attention_processor
     diffusers.models.attention_processor.AttnProcessor2_0 = MockAttentionProcessor
@@ -169,17 +163,55 @@ def clear_gpu_memory():
 def gpu_mem_mb():
     return (torch.cuda.memory_allocated() / 1024 ** 2) if torch.cuda.is_available() else 0
 
-# ADDED: Enhanced utility function to handle BaseOutput and tuple conversions
+# ADDED: PIL Image to tensor conversion function
+def pil_to_tensor(pil_image, device="cuda"):
+    """Convert PIL Image to tensor format expected by TripoSR"""
+    try:
+        # Convert PIL Image to numpy array
+        img_array = np.array(pil_image)
+        
+        # Handle different image modes
+        if pil_image.mode == 'RGBA':
+            # Convert RGBA to RGB
+            if img_array.shape[-1] == 4:
+                # Alpha blend with white background
+                alpha = img_array[..., 3:4] / 255.0
+                rgb = img_array[..., :3]
+                img_array = (rgb * alpha + 255 * (1 - alpha)).astype(np.uint8)
+        
+        # Ensure RGB format
+        if len(img_array.shape) == 2:  # Grayscale
+            img_array = np.stack([img_array] * 3, axis=-1)
+        elif img_array.shape[-1] == 4:  # RGBA
+            img_array = img_array[..., :3]  # Take only RGB channels
+            
+        # Convert to tensor and normalize to [0, 1]
+        tensor = torch.from_numpy(img_array).float() / 255.0
+        
+        # Change from HWC to CHW format
+        tensor = tensor.permute(2, 0, 1)
+        
+        # Add batch dimension
+        tensor = tensor.unsqueeze(0)
+        
+        # Move to device
+        tensor = tensor.to(device)
+        
+        logger.info(f"✅ PIL to tensor conversion: {pil_image.size} -> {tensor.shape}")
+        return tensor
+        
+    except Exception as e:
+        logger.error(f"PIL to tensor conversion failed: {e}")
+        raise
+
 def ensure_tensor_from_output(data):
     """Convert diffusers BaseOutput or tuple outputs to tensors safely"""
-    # Handle BaseOutput objects from diffusers
     if hasattr(data, 'images'):
-        return data.images[0]  # Extract first image from BaseOutput
+        return data.images[0]
     elif hasattr(data, 'to_tuple'):
         tuple_data = data.to_tuple()
         return tuple_data[0] if tuple_data else None
     elif isinstance(data, tuple):
-        # If it's a tuple, extract the first element (usually the main tensor)
         first_element = data[0]
         if hasattr(first_element, 'images'):
             return first_element.images[0]
@@ -189,52 +221,43 @@ def ensure_tensor_from_output(data):
     elif torch.is_tensor(data):
         return data
     else:
-        # Convert to tensor if it's not already one
         return torch.tensor(data) if not isinstance(data, torch.Tensor) else data
 
-# ADDED: Safe resize function with better error handling
 def safe_resize_foreground(image, ratio=1.0):
     """Safely resize image with comprehensive error handling"""
     try:
-        # Validate input
         if image is None:
             raise ValueError("Input image is None")
         
         if not isinstance(image, Image.Image):
             raise ValueError(f"Expected PIL Image, got {type(image)}")
         
-        # If ratio is 1.0, return original image
         if ratio == 1.0:
             logger.info("Resize ratio is 1.0, returning original image")
             return image
         
-        # Get original dimensions
         width, height = image.size
         logger.info(f"Original image size: {width}x{height}")
         
-        # Calculate new dimensions
         new_width = int(width * ratio)
         new_height = int(height * ratio)
         
-        # Ensure minimum size
         new_width = max(new_width, 64)
         new_height = max(new_height, 64)
         
         logger.info(f"Resizing to: {new_width}x{new_height}")
         
-        # Perform resize
         resized = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
         return resized
         
     except Exception as e:
         logger.error(f"Safe resize failed: {str(e)}")
         logger.info("Returning original image as fallback")
-        return image  # Return original on error
+        return image
 
 class OptimizedParameters:
     """Memory-optimized parameters to prevent CUDA OOM"""
     
-    # Reduced for memory efficiency
     DEFAULT_INFERENCE_STEPS = 20
     DEFAULT_GUIDANCE_SCALE = 7.0
     DEFAULT_N_VIEWS = 2
@@ -279,7 +302,6 @@ class ResultCache:
 
 result_cache = ResultCache()
 
-# Sharpest view selection function
 def sharpest(img_list):
     """Return PIL image with highest Laplacian variance."""
     try:
@@ -428,7 +450,6 @@ try:
     
     logger.info("Loading Stable Diffusion...")
     _flush()
-    # FIXED: Initialize with return_dict=True to ensure consistent BaseOutput format
     app.sd = StableDiffusionControlNetPipeline.from_pretrained(
         "runwayml/stable-diffusion-v1-5", 
         controlnet=app.cnet,
@@ -444,7 +465,6 @@ try:
     except Exception as e:
         logger.warning(f"xformers not available: {e}")
     
-    # Memory optimization techniques
     app.sd.enable_model_cpu_offload()
     app.sd.enable_attention_slicing()
     app.sd.enable_vae_slicing()
@@ -527,23 +547,20 @@ try:
                 logger.error(f"Edge detection failed: {e}")
                 return jsonify({"error": f"Edge detection failed: {str(e)}"}), 500
 
-            # FIXED: Enhanced Stable Diffusion with proper BaseOutput handling
+            # Enhanced Stable Diffusion with proper BaseOutput handling
             try:
                 with torch.no_grad():
                     with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
-                        # Force return_dict=True to get BaseOutput instead of tuple
                         result = app.sd(
                             prompt, 
                             image=edge,
                             num_inference_steps=params['num_inference_steps'], 
                             guidance_scale=params['guidance_scale'],
-                            return_dict=True  # FIXED: Force BaseOutput format
+                            return_dict=True
                         )
                         
-                        # FIXED: Use proper BaseOutput handling
                         concept = ensure_tensor_from_output(result)
                         
-                        # ADDED: Validate concept before proceeding
                         if concept is None:
                             raise ValueError("Stable Diffusion returned None concept")
                         
@@ -555,11 +572,10 @@ try:
                 logger.error(f"Stable Diffusion failed: {e}")
                 return jsonify({"error": f"Stable Diffusion failed: {str(e)}"}), 500
 
-            # FIXED: Enhanced resize with better error handling and fallback
+            # Enhanced resize with better error handling and fallback
             try:
                 logger.info(f"About to resize concept: {type(concept)}")
                 
-                # Use the TripoSR resize_foreground function with fallback
                 try:
                     concept = resize_foreground(concept, 1.0)
                     logger.info("✅ TripoSR resize_foreground successful")
@@ -568,7 +584,6 @@ try:
                     logger.info("🔄 Falling back to safe_resize_foreground")
                     concept = safe_resize_foreground(concept, 1.0)
                 
-                # Final validation
                 if concept is None:
                     raise ValueError("Concept is None after resize")
                     
@@ -579,18 +594,25 @@ try:
                 logger.error(f"All resize methods failed: {e}")
                 return jsonify({"error": f"Resize failed: {str(e)}"}), 500
 
-            # TripoSR processing with enhanced BaseOutput handling
+            # FIXED: TripoSR processing with proper PIL to tensor conversion
             try:
+                # Convert PIL Image to tensor before passing to TripoSR
+                if isinstance(concept, Image.Image):
+                    logger.info("Converting PIL Image to tensor for TripoSR")
+                    concept_tensor = pil_to_tensor(concept, DEVICE)
+                else:
+                    logger.info(f"Concept is already tensor-like: {type(concept)}")
+                    concept_tensor = concept
+                
                 with torch.no_grad():
                     with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
-                        # FIXED: Enhanced handling for TripoSR output
-                        raw_codes = app.triposr([concept], device=DEVICE)
-                        # Use proper tensor extraction
+                        # FIXED: Pass tensor instead of PIL Image
+                        raw_codes = app.triposr(concept_tensor, device=DEVICE)
                         codes = ensure_tensor_from_output(raw_codes)
-                        del raw_codes
+                        del raw_codes, concept_tensor
                 clear_gpu_memory()
 
-                # Render views with proper BaseOutput handling
+                # Render views
                 with torch.no_grad():
                     with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
                         raw_views = app.triposr.render(
@@ -600,7 +622,6 @@ try:
                             width=params['width'], 
                             return_type="pil"
                         )
-                        # FIXED: Enhanced BaseOutput/tuple handling for render output
                         views = ensure_tensor_from_output(raw_views)
                         del raw_views
                 del codes
