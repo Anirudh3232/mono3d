@@ -11,6 +11,7 @@ from torch.cuda.amp import autocast
 from contextlib import nullcontext
 import psutil
 import subprocess
+import torchvision.transforms as transforms
 
 # ENHANCED COMPATIBILITY PATCHES - Must come first
 import transformers
@@ -208,14 +209,11 @@ def safe_resize_foreground(image, ratio=1.0):
         logger.info("Returning original image as fallback")
         return image
 
-# FIXED: Enhanced image preparation with post-background-removal RGB conversion
-def prepare_image_with_triposr_utils(pil_image, device):
-    """Use TripoSR's built-in preprocessing utilities with proper RGB conversion"""
+# FIXED: Alternative approach - Skip complex TripoSR preprocessing and use direct tensor conversion
+def convert_image_to_triposr_tensor(pil_image, device):
+    """Convert PIL Image to tensor format compatible with TripoSR"""
     try:
-        # Import TripoSR preprocessing utilities
-        from tsr.utils import resize_foreground, remove_background
-        
-        # Ensure RGB format initially
+        # Ensure RGB format
         if pil_image.mode != 'RGB':
             if pil_image.mode == 'RGBA':
                 # Create white background and blend alpha
@@ -224,53 +222,26 @@ def prepare_image_with_triposr_utils(pil_image, device):
                 pil_image = white_background
             else:
                 pil_image = pil_image.convert('RGB')
-            logger.info(f"✅ Initial conversion to RGB format")
+            logger.info("✅ Converted to RGB format")
         
-        # Use TripoSR's resize_foreground utility
-        try:
-            processed_image = resize_foreground(pil_image, 1.0)
-            logger.info("✅ Used TripoSR resize_foreground")
-        except Exception as e:
-            logger.warning(f"TripoSR resize_foreground failed: {e}, using PIL resize")
-            # Fallback to standard resize
-            processed_image = pil_image.resize((256, 256), Image.Resampling.LANCZOS)
+        # Resize to optimal size for TripoSR
+        if pil_image.size != (512, 512):
+            pil_image = pil_image.resize((512, 512), Image.Resampling.LANCZOS)
+            logger.info("✅ Resized to 512x512")
         
-        # Use TripoSR's remove_background utility if available
-        try:
-            processed_image = remove_background(processed_image)
-            logger.info("✅ Used TripoSR remove_background")
-            
-            # FIXED: Convert back to RGB after background removal
-            if processed_image.mode == 'RGBA':
-                logger.info("🔄 Converting RGBA back to RGB after background removal")
-                # Create white background for transparency
-                white_background = Image.new('RGB', processed_image.size, (255, 255, 255))
-                white_background.paste(processed_image, mask=processed_image.split()[-1])
-                processed_image = white_background
-                logger.info("✅ Successfully converted RGBA to RGB")
-            
-        except Exception as e:
-            logger.warning(f"TripoSR remove_background failed: {e}, skipping")
+        # Convert PIL to numpy
+        img_array = np.array(pil_image).astype(np.float32) / 255.0
         
-        # Final RGB validation
-        if processed_image.mode != 'RGB':
-            logger.warning(f"Final mode is {processed_image.mode}, converting to RGB")
-            processed_image = processed_image.convert('RGB')
+        # Convert to tensor and rearrange dimensions
+        tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0)  # HWC -> BCHW
+        tensor = tensor.to(device)
         
-        logger.info(f"✅ Image preprocessed with TripoSR utils: {processed_image.size}, mode: {processed_image.mode}")
-        return processed_image
+        logger.info(f"✅ PIL Image converted to tensor: {tensor.shape}, dtype: {tensor.dtype}")
+        return tensor
         
     except Exception as e:
-        logger.error(f"TripoSR preprocessing failed: {e}")
-        # Fallback to basic RGB conversion
-        if pil_image.mode != 'RGB':
-            if pil_image.mode == 'RGBA':
-                white_background = Image.new('RGB', pil_image.size, (255, 255, 255))
-                white_background.paste(pil_image, mask=pil_image.split()[-1])
-                pil_image = white_background
-            else:
-                pil_image = pil_image.convert('RGB')
-        return pil_image.resize((256, 256), Image.Resampling.LANCZOS)
+        logger.error(f"Image to tensor conversion failed: {e}")
+        raise
 
 class OptimizedParameters:
     DEFAULT_INFERENCE_STEPS = 20
@@ -597,18 +568,18 @@ try:
                 logger.error(f"All resize methods failed: {e}")
                 return jsonify({"error": f"Resize failed: {str(e)}"}), 500
 
-            # FIXED: TripoSR processing with proper RGB conversion
+            # FIXED: TripoSR processing with direct tensor conversion
             try:
-                # Use TripoSR's own preprocessing utilities with RGB conversion fix
-                concept_prepared = prepare_image_with_triposr_utils(concept, DEVICE)
+                # Convert PIL Image to tensor that TripoSR can understand
+                concept_tensor = convert_image_to_triposr_tensor(concept, DEVICE)
                 
                 with torch.no_grad():
                     with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
-                        logger.info("Calling TripoSR with RGB preprocessed image")
-                        # Pass the preprocessed image to TripoSR
-                        raw_codes = app.triposr([concept_prepared], device=DEVICE)
+                        logger.info("Calling TripoSR with tensor input")
+                        # Pass tensor directly to TripoSR
+                        raw_codes = app.triposr(concept_tensor, device=DEVICE)
                         codes = ensure_tensor_from_output(raw_codes)
-                        del raw_codes, concept_prepared
+                        del raw_codes, concept_tensor
                 clear_gpu_memory()
 
                 # Render views
