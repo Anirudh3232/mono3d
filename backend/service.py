@@ -62,7 +62,7 @@ class MockHybridCache(MockCache):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-# Apply patches to transformers module
+# Apply patches
 for cache_name, cache_class in [
     ("Cache", MockCache),
     ("DynamicCache", MockCache),
@@ -145,14 +145,12 @@ def timing(f):
     return wrapper
 
 def _flush():
-    """Force flush stdout/stderr to ensure logs are visible"""
     sys.stdout.flush()
     sys.stderr.flush()
 
 atexit.register(_flush)
 
 def clear_gpu_memory():
-    """Aggressive GPU memory clearing for OOM prevention"""
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
@@ -162,7 +160,6 @@ def gpu_mem_mb():
     return (torch.cuda.memory_allocated() / 1024 ** 2) if torch.cuda.is_available() else 0
 
 def ensure_tensor_from_output(data):
-    """Convert diffusers BaseOutput or tuple outputs to tensors safely"""
     if hasattr(data, 'images'):
         return data.images[0]
     elif hasattr(data, 'to_tuple'):
@@ -181,7 +178,6 @@ def ensure_tensor_from_output(data):
         return torch.tensor(data) if not isinstance(data, torch.Tensor) else data
 
 def safe_resize_foreground(image, ratio=1.0):
-    """Safely resize image with comprehensive error handling"""
     try:
         if image is None:
             raise ValueError("Input image is None")
@@ -212,59 +208,51 @@ def safe_resize_foreground(image, ratio=1.0):
         logger.info("Returning original image as fallback")
         return image
 
-# FIXED: Proper image preparation with RGBA to RGB conversion
-def prepare_image_for_triposr(pil_image):
-    """Prepare PIL image for TripoSR processing with proper RGB conversion"""
+# FIXED: Use TripoSR's built-in preprocessing
+def prepare_image_with_triposr_utils(pil_image, device):
+    """Use TripoSR's built-in preprocessing utilities"""
     try:
-        # FIXED: Convert RGBA to RGB properly
-        if pil_image.mode == 'RGBA':
-            # Create a white background image
-            white_background = Image.new('RGB', pil_image.size, (255, 255, 255))
-            # Paste the RGBA image onto the white background using alpha channel
-            white_background.paste(pil_image, mask=pil_image.split()[-1])  # Use alpha channel as mask
-            pil_image = white_background
-            logger.info("✅ Converted RGBA to RGB with white background")
-        elif pil_image.mode != 'RGB':
-            # Convert any other mode to RGB
-            pil_image = pil_image.convert('RGB')
-            logger.info(f"✅ Converted {pil_image.mode} to RGB")
+        # Import TripoSR preprocessing utilities
+        from tsr.utils import resize_foreground, remove_background
         
-        # TripoSR typically expects square images
-        width, height = pil_image.size
-        if width != height:
-            # Make it square by padding with white background
-            max_size = max(width, height)
-            new_image = Image.new('RGB', (max_size, max_size), (255, 255, 255))
-            paste_x = (max_size - width) // 2
-            paste_y = (max_size - height) // 2
-            new_image.paste(pil_image, (paste_x, paste_y))
-            pil_image = new_image
-            logger.info(f"✅ Made image square: {max_size}x{max_size}")
+        # Ensure RGB format
+        if pil_image.mode != 'RGB':
+            if pil_image.mode == 'RGBA':
+                # Create white background and blend alpha
+                white_background = Image.new('RGB', pil_image.size, (255, 255, 255))
+                white_background.paste(pil_image, mask=pil_image.split()[-1])
+                pil_image = white_background
+            else:
+                pil_image = pil_image.convert('RGB')
+            logger.info(f"✅ Converted to RGB format")
         
-        # Resize to a size that TripoSR can handle efficiently
-        target_size = 256  # Smaller size for memory efficiency
-        if pil_image.size[0] != target_size:
-            pil_image = pil_image.resize((target_size, target_size), Image.Resampling.LANCZOS)
-            logger.info(f"✅ Resized image to {target_size}x{target_size} for TripoSR")
+        # Use TripoSR's resize_foreground utility
+        try:
+            processed_image = resize_foreground(pil_image, 1.0)
+            logger.info("✅ Used TripoSR resize_foreground")
+        except Exception as e:
+            logger.warning(f"TripoSR resize_foreground failed: {e}, using PIL resize")
+            # Fallback to standard resize
+            processed_image = pil_image.resize((256, 256), Image.Resampling.LANCZOS)
         
-        logger.info(f"✅ Image prepared for TripoSR: {pil_image.size}, mode: {pil_image.mode}")
-        return pil_image
+        # Use TripoSR's remove_background utility if available
+        try:
+            processed_image = remove_background(processed_image)
+            logger.info("✅ Used TripoSR remove_background")
+        except Exception as e:
+            logger.warning(f"TripoSR remove_background failed: {e}, skipping")
+        
+        logger.info(f"✅ Image preprocessed with TripoSR utils: {processed_image.size}, mode: {processed_image.mode}")
+        return processed_image
         
     except Exception as e:
-        logger.error(f"Image preparation failed: {e}")
-        # Fallback: try basic RGB conversion
-        try:
-            if pil_image.mode != 'RGB':
-                pil_image = pil_image.convert('RGB')
-                logger.info("✅ Fallback RGB conversion successful")
-            return pil_image
-        except Exception as fallback_error:
-            logger.error(f"Fallback conversion failed: {fallback_error}")
-            return pil_image
+        logger.error(f"TripoSR preprocessing failed: {e}")
+        # Fallback to basic RGB conversion
+        if pil_image.mode != 'RGB':
+            pil_image = pil_image.convert('RGB')
+        return pil_image.resize((256, 256), Image.Resampling.LANCZOS)
 
 class OptimizedParameters:
-    """Memory-optimized parameters to prevent CUDA OOM"""
-    
     DEFAULT_INFERENCE_STEPS = 20
     DEFAULT_GUIDANCE_SCALE = 7.0
     DEFAULT_N_VIEWS = 2
@@ -273,7 +261,6 @@ class OptimizedParameters:
     
     @classmethod
     def get_optimized_params(cls, data):
-        """Get memory-optimized parameters"""
         return {
             'num_inference_steps': int(data.get("num_inference_steps", cls.DEFAULT_INFERENCE_STEPS)),
             'guidance_scale': float(data.get("guidance_scale", cls.DEFAULT_GUIDANCE_SCALE)),
@@ -283,8 +270,6 @@ class OptimizedParameters:
         }
 
 class ResultCache:
-    """Simple caching system to avoid redundant computations"""
-    
     def __init__(self, max_size=5):
         self.cache = {}
         self.max_size = max_size
@@ -310,7 +295,6 @@ class ResultCache:
 result_cache = ResultCache()
 
 def sharpest(img_list):
-    """Return PIL image with highest Laplacian variance."""
     try:
         import cv2
         scores = [
@@ -322,7 +306,7 @@ def sharpest(img_list):
         logger.warning("OpenCV not available, returning first image")
         return img_list[0] if img_list else None
 
-# Robust marching cubes fallback
+# Marching cubes fallback (keeping existing implementation)
 try:
     import torchmcubes
     logger.info("✅ Using torchmcubes")
@@ -415,7 +399,6 @@ try:
         weight_name="model.ckpt"
     )
     
-    # Memory optimization for TripoSR
     triposr_model.to(DEVICE)
     if DEVICE == "cuda":
         triposr_model = triposr_model.half()
@@ -427,7 +410,6 @@ try:
     app = Flask(__name__)
     CORS(app)
 
-    # Health endpoint
     @app.route("/health", methods=["GET"])
     def health():
         return jsonify({
@@ -438,12 +420,11 @@ try:
             "triposr_available": True
         })
 
-    # Test endpoint
     @app.route("/test", methods=["GET", "POST"])
     def test():
         return jsonify({"message": "Memory-optimized server is working!", "method": request.method})
 
-    # Load other models with memory management
+    # Load other models
     logger.info("Loading edge detector...")
     _flush()
     app.edge_det = CannyDetector()
@@ -477,7 +458,6 @@ try:
     app.sd.enable_vae_slicing()
 
     def ensure_module_on_device(module, target_device):
-        """Helper function to ensure all tensors are on the right device"""
         if module is None:
             return None
         try:
@@ -487,7 +467,6 @@ try:
             logger.warning(f"Could not move module to {target_device}: {e}")
             return module
 
-    # Setup TripoSR
     app.triposr = triposr_model
     app.triposr = ensure_module_on_device(app.triposr, DEVICE)
     
@@ -495,7 +474,6 @@ try:
     logger.info("✅ All models loaded with memory optimization")
     _flush()
 
-    # Memory-optimized generate endpoint
     @app.route("/generate", methods=["POST"])
     @timing
     def generate():
@@ -530,7 +508,6 @@ try:
                 
                 pil = Image.open(io.BytesIO(png)).convert("RGBA")
                 
-                # Resize input to reduce memory usage
                 if pil.size[0] > 512 or pil.size[1] > 512:
                     pil = pil.resize((512, 512), Image.Resampling.LANCZOS)
                     
@@ -542,7 +519,6 @@ try:
             params = OptimizedParameters.get_optimized_params(data)
             logger.info(f"Using parameters: {params}")
 
-            # Clear memory before processing
             clear_gpu_memory()
 
             # Edge detection
@@ -554,7 +530,7 @@ try:
                 logger.error(f"Edge detection failed: {e}")
                 return jsonify({"error": f"Edge detection failed: {str(e)}"}), 500
 
-            # Enhanced Stable Diffusion with proper BaseOutput handling
+            # Stable Diffusion
             try:
                 with torch.no_grad():
                     with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
@@ -579,7 +555,7 @@ try:
                 logger.error(f"Stable Diffusion failed: {e}")
                 return jsonify({"error": f"Stable Diffusion failed: {str(e)}"}), 500
 
-            # Enhanced resize with better error handling and fallback
+            # Resize with fallback
             try:
                 logger.info(f"About to resize concept: {type(concept)}")
                 
@@ -601,14 +577,15 @@ try:
                 logger.error(f"All resize methods failed: {e}")
                 return jsonify({"error": f"Resize failed: {str(e)}"}), 500
 
-            # FIXED: TripoSR processing with proper RGB conversion
+            # FIXED: TripoSR processing with built-in preprocessing
             try:
-                # Prepare the image properly for TripoSR (RGBA → RGB conversion)
-                concept_prepared = prepare_image_for_triposr(concept)
+                # Use TripoSR's own preprocessing utilities
+                concept_prepared = prepare_image_with_triposr_utils(concept, DEVICE)
                 
                 with torch.no_grad():
                     with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
-                        logger.info("Calling TripoSR with RGB prepared PIL image")
+                        logger.info("Calling TripoSR with preprocessed image")
+                        # Pass the preprocessed image to TripoSR
                         raw_codes = app.triposr([concept_prepared], device=DEVICE)
                         codes = ensure_tensor_from_output(raw_codes)
                         del raw_codes, concept_prepared
@@ -644,15 +621,13 @@ try:
                 logger.error(f"View selection failed: {e}")
                 return jsonify({"error": f"View selection failed: {str(e)}"}), 500
 
-            # Return result as PNG
+            # Return result
             try:
                 buf = io.BytesIO()
                 final_image.save(buf, "PNG")
                 buf.seek(0)
 
-                # Cache result
                 result_cache.put(cache_key, io.BytesIO(buf.getvalue()))
-
                 clear_gpu_memory()
                 _flush()
                 
