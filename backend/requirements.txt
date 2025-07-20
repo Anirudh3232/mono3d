@@ -23,8 +23,9 @@ opencv-python>=4.8.0
 imageio==2.34.0
 
 # ─────────────── Marching Cubes Fallbacks ───────────────
-scikit-image==0.22.0  # Primary fallback for marching cubes
-PyMCubes==0.1.6       # Optional fallback (may fail in some environments)
+pip install PyMCubes==0.1.4
+scikit-image==0.22.0
+
 
 # ─────────────── API Server ───────────────
 Flask==3.0.3
