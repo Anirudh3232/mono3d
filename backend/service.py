@@ -11,12 +11,10 @@ from torch.cuda.amp import autocast
 from contextlib import nullcontext
 import psutil
 import subprocess
-import torchvision.transforms as transforms
 
 # ENHANCED COMPATIBILITY PATCHES - Must come first
 import transformers
 
-# FIXED: Improved MockCache that handles attention processor calls properly
 class MockCache:
     def __init__(self, *args, **kwargs):
         pass
@@ -163,47 +161,6 @@ def clear_gpu_memory():
 def gpu_mem_mb():
     return (torch.cuda.memory_allocated() / 1024 ** 2) if torch.cuda.is_available() else 0
 
-# ADDED: PIL Image to tensor conversion function
-def pil_to_tensor(pil_image, device="cuda"):
-    """Convert PIL Image to tensor format expected by TripoSR"""
-    try:
-        # Convert PIL Image to numpy array
-        img_array = np.array(pil_image)
-        
-        # Handle different image modes
-        if pil_image.mode == 'RGBA':
-            # Convert RGBA to RGB
-            if img_array.shape[-1] == 4:
-                # Alpha blend with white background
-                alpha = img_array[..., 3:4] / 255.0
-                rgb = img_array[..., :3]
-                img_array = (rgb * alpha + 255 * (1 - alpha)).astype(np.uint8)
-        
-        # Ensure RGB format
-        if len(img_array.shape) == 2:  # Grayscale
-            img_array = np.stack([img_array] * 3, axis=-1)
-        elif img_array.shape[-1] == 4:  # RGBA
-            img_array = img_array[..., :3]  # Take only RGB channels
-            
-        # Convert to tensor and normalize to [0, 1]
-        tensor = torch.from_numpy(img_array).float() / 255.0
-        
-        # Change from HWC to CHW format
-        tensor = tensor.permute(2, 0, 1)
-        
-        # Add batch dimension
-        tensor = tensor.unsqueeze(0)
-        
-        # Move to device
-        tensor = tensor.to(device)
-        
-        logger.info(f"✅ PIL to tensor conversion: {pil_image.size} -> {tensor.shape}")
-        return tensor
-        
-    except Exception as e:
-        logger.error(f"PIL to tensor conversion failed: {e}")
-        raise
-
 def ensure_tensor_from_output(data):
     """Convert diffusers BaseOutput or tuple outputs to tensors safely"""
     if hasattr(data, 'images'):
@@ -254,6 +211,38 @@ def safe_resize_foreground(image, ratio=1.0):
         logger.error(f"Safe resize failed: {str(e)}")
         logger.info("Returning original image as fallback")
         return image
+
+# FIXED: Proper image preparation for TripoSR
+def prepare_image_for_triposr(pil_image):
+    """Prepare PIL image for TripoSR processing"""
+    try:
+        # Ensure we have an RGBA image
+        if pil_image.mode != 'RGBA':
+            pil_image = pil_image.convert('RGBA')
+        
+        # TripoSR typically expects square images
+        width, height = pil_image.size
+        if width != height:
+            # Make it square by padding with white background
+            max_size = max(width, height)
+            new_image = Image.new('RGBA', (max_size, max_size), (255, 255, 255, 255))
+            paste_x = (max_size - width) // 2
+            paste_y = (max_size - height) // 2
+            new_image.paste(pil_image, (paste_x, paste_y))
+            pil_image = new_image
+        
+        # Resize to a size that TripoSR can handle efficiently
+        target_size = 256  # Smaller size for memory efficiency
+        if pil_image.size[0] != target_size:
+            pil_image = pil_image.resize((target_size, target_size), Image.Resampling.LANCZOS)
+            logger.info(f"Resized image to {target_size}x{target_size} for TripoSR")
+        
+        logger.info(f"✅ Image prepared for TripoSR: {pil_image.size}, mode: {pil_image.mode}")
+        return pil_image
+        
+    except Exception as e:
+        logger.error(f"Image preparation failed: {e}")
+        return pil_image  # Return original on error
 
 class OptimizedParameters:
     """Memory-optimized parameters to prevent CUDA OOM"""
@@ -594,22 +583,18 @@ try:
                 logger.error(f"All resize methods failed: {e}")
                 return jsonify({"error": f"Resize failed: {str(e)}"}), 500
 
-            # FIXED: TripoSR processing with proper PIL to tensor conversion
+            # FIXED: TripoSR processing with proper PIL Image handling
             try:
-                # Convert PIL Image to tensor before passing to TripoSR
-                if isinstance(concept, Image.Image):
-                    logger.info("Converting PIL Image to tensor for TripoSR")
-                    concept_tensor = pil_to_tensor(concept, DEVICE)
-                else:
-                    logger.info(f"Concept is already tensor-like: {type(concept)}")
-                    concept_tensor = concept
+                # Prepare the image properly for TripoSR
+                concept_prepared = prepare_image_for_triposr(concept)
                 
                 with torch.no_grad():
                     with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
-                        # FIXED: Pass tensor instead of PIL Image
-                        raw_codes = app.triposr(concept_tensor, device=DEVICE)
+                        # FIXED: Pass PIL Image directly in a list (TripoSR's expected format)
+                        logger.info("Calling TripoSR with prepared PIL image")
+                        raw_codes = app.triposr([concept_prepared], device=DEVICE)
                         codes = ensure_tensor_from_output(raw_codes)
-                        del raw_codes, concept_tensor
+                        del raw_codes, concept_prepared
                 clear_gpu_memory()
 
                 # Render views
