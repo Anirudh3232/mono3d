@@ -7,6 +7,7 @@ torchaudio==2.2.2+cu118
 # ────────── Diffusers & Transformers Stack ───────────
 diffusers==0.27.2
 transformers==4.38.2
+peft==0.10.0
 accelerate==0.27.2
 huggingface-hub==0.25.1
 controlnet-aux==0.0.7
@@ -32,6 +33,7 @@ Flask-Cors==4.0.1
 
 # ─────────────── System Monitoring ───────────────
 psutil>=5.9.0,<6.0.0
+
 
 onnxruntime>=1.16.0,<2.0.0
 
