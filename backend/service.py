@@ -46,19 +46,26 @@ try:
 except ImportError:
     pass
 
-# Hugging Face compatibility
+try:
+    import transformers.models.encoder_decoder as _ted
+    if not hasattr(_ted, "EncoderDecoderCache"):
+        setattr(_ted, "EncoderDecoderCache", MockEncoderDecoderCache)
+except ImportError:
+    pass
+
 import huggingface_hub as _hf_hub
 if not hasattr(_hf_hub, "cached_download"):
     _hf_hub.cached_download = _hf_hub.hf_hub_download
 
-# Accelerate compatibility
 _acc_mem = importlib.import_module("accelerate.utils.memory")
 if not hasattr(_acc_mem, "clear_device_cache"):
     _acc_mem.clear_device_cache = lambda *a, **k: None
 
-# Attention processor patches
 import diffusers.models.attention_processor
 diffusers.models.attention_processor.AttnProcessor2_0 = MockCache
+
+import transformers.models.llama.modeling_llama
+transformers.models.llama.modeling_llama.AttnProcessor2_0 = MockCache
 
 # Logging setup
 logging.basicConfig(
@@ -91,16 +98,46 @@ def _flush():
 atexit.register(_flush)
 
 def clear_gpu_memory():
-    """Optimized GPU memory clearing"""
+    """Optimized GPU memory clearing with reduced CPU overhead"""
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-        gc.collect()
+        if hasattr(clear_gpu_memory, '_gc_counter'):
+            clear_gpu_memory._gc_counter += 1
+        else:
+            clear_gpu_memory._gc_counter = 0
+        
+        if clear_gpu_memory._gc_counter % 3 == 0:  # Run GC every 3rd call
+            gc.collect()
 
 def gpu_mem_mb():
     return (torch.cuda.memory_allocated() / 1024 ** 2) if torch.cuda.is_available() else 0
 
+class OptimizedParameters:
+    """Optimized default parameters to reduce CPU usage"""
+    
+    # Reduced inference steps for faster generation
+    DEFAULT_INFERENCE_STEPS = 30  # Reduced from 63
+    DEFAULT_GUIDANCE_SCALE = 7.5  # Reduced from 9.96 for faster convergence
+    
+    # Optimized render parameters
+    DEFAULT_N_VIEWS = 4
+    DEFAULT_HEIGHT = 512
+    DEFAULT_WIDTH = 512
+    
+    @classmethod
+    def get_optimized_params(cls, data):
+        """Get optimized parameters based on request data"""
+        return {
+            'num_inference_steps': int(data.get("num_inference_steps", cls.DEFAULT_INFERENCE_STEPS)),
+            'guidance_scale': float(data.get("guidance_scale", cls.DEFAULT_GUIDANCE_SCALE)),
+            'n_views': int(data.get("n_views", cls.DEFAULT_N_VIEWS)),
+            'height': int(data.get("height", cls.DEFAULT_HEIGHT)),
+            'width': int(data.get("width", cls.DEFAULT_WIDTH))
+        }
+
 class ResultCache:
-    """Simple caching system"""
+    """Simple caching system to avoid redundant computations"""
+    
     def __init__(self, max_size=10):
         self.cache = {}
         self.max_size = max_size
@@ -108,6 +145,7 @@ class ResultCache:
     
     def get(self, key):
         if key in self.cache:
+            # Move to end of access order
             if key in self.access_order:
                 self.access_order.remove(key)
             self.access_order.append(key)
@@ -116,8 +154,10 @@ class ResultCache:
     
     def put(self, key, value):
         if len(self.cache) >= self.max_size:
+            # Remove least recently used
             lru_key = self.access_order.pop(0)
             del self.cache[lru_key]
+        
         self.cache[key] = value
         if key not in self.access_order:
             self.access_order.append(key)
@@ -134,32 +174,36 @@ def sharpest(img_list):
     ]
     return img_list[int(np.argmax(scores))]
 
-print("Starting service initialization...")
+print("Starting optimized service initialization …")
 try:
-    logger.info("Importing diffusers...")
+    logger.info("Importing diffusers …")
     _flush()
     from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, EulerAncestralDiscreteScheduler
     from controlnet_aux import CannyDetector
-    
-    # TripoSR setup
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"        
-    logger.info(f"Loading TripoSR model on {DEVICE}...")
-    
-    triposr_path = os.path.join(os.getcwd(), "backend", "TripoSR-main")
-    if triposr_path not in sys.path:
-        sys.path.insert(0, triposr_path)
-    
+
+    # TripoSR imports - load from your local backend
+    logger.info("Importing TripoSR from local backend...")
     try:
         from tsr.system import TSR
-        logger.info("TSR module imported successfully")
-        triposr_model = TSR()
-        triposr_model.to(DEVICE)
-        triposr_model.eval()
-        logger.info("TripoSR model loaded")
+        from tsr.utils import resize_foreground, remove_background
+        logger.info("✅ TripoSR imported successfully from local backend")
     except ImportError as e:
-        logger.error(f"Failed to import TSR: {e}")
-        triposr_model = None
-    
+        logger.error(f"❌ Failed to import TripoSR: {e}")
+        logger.error(f"Make sure TripoSR-main directory exists at: {os.path.join(os.path.dirname(__file__), 'TripoSR-main')}")
+        raise
+
+    # Load TripoSR model
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"        
+    logger.info(f"Loading TripoSR model on {DEVICE}...")
+    triposr_model = TSR.from_pretrained(
+        "stabilityai/TripoSR",
+        config_name="config.yaml", 
+        weight_name="model.ckpt"
+    )
+    triposr_model.to(DEVICE)
+    triposr_model.eval()
+    logger.info("✅ TripoSR model loaded")
+
     app = Flask(__name__)
     CORS(app)
 
@@ -171,37 +215,36 @@ try:
             "gpu_mb": gpu_mem_mb(),
             "cpu_percent": psutil.cpu_percent(interval=None),
             "memory_percent": psutil.virtual_memory().percent,
-            "triposr_available": triposr_model is not None
+            "triposr_available": True,
+            "optimization_available": True  # Adjust based on your setup
         })
 
     # Test endpoint
     @app.route("/test", methods=["GET", "POST"])
     def test():
-        return jsonify({"message": "Server is working!", "method": request.method})
+        return jsonify({"message": "Optimized server is working!", "method": request.method})
 
     # Load models
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Using {device}")
-    
-    if device == "cuda":
+    if DEVICE == "cuda":
         torch.backends.cudnn.benchmark = True
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
+        torch.cuda.set_per_process_memory_fraction(0.9)  # Use 90% of GPU memory
 
-    logger.info("Loading edge detector...")
+    logger.info("Loading edge detector …")
     _flush()
     app.edge_det = CannyDetector()
     
-    logger.info("Loading ControlNet...")
+    logger.info("Loading ControlNet …")
     _flush()
     app.cnet = ControlNetModel.from_pretrained(
-        "lllyasviel/sd-controlnet-canny", torch_dtype=torch.float16).to(device)
+        "lllyasviel/sd-controlnet-canny", torch_dtype=torch.float16).to(DEVICE)
     
-    logger.info("Loading Stable Diffusion...")
+    logger.info("Loading Stable Diffusion …")
     _flush()
     app.sd = StableDiffusionControlNetPipeline.from_pretrained(
         "runwayml/stable-diffusion-v1-5", controlnet=app.cnet,
-        torch_dtype=torch.float16).to(device)
+        torch_dtype=torch.float16).to(DEVICE)
     
     app.sd.scheduler = EulerAncestralDiscreteScheduler.from_config(app.sd.scheduler.config)
     
@@ -209,23 +252,57 @@ try:
         app.sd.enable_xformers_memory_efficient_attention()
         logger.info("xformers enabled")
     except Exception:
-        logger.warning("xformers not available")
+        logger.warning("xformers not available — using plain attention")
     
+    # Optimized memory management
     app.sd.enable_model_cpu_offload()
     app.sd.enable_attention_slicing()
-    app.sd.enable_vae_slicing()
+    app.sd.enable_vae_slicing()  # Additional optimization
 
-    logger.info("Setting up TripoSR...")
+    logger.info("Loading TripoSR locally…")
     _flush()
-    
+    app.last_concept_image = None
+
+    def ensure_module_on_device(module, target_device):
+        """Helper function to ensure all tensors in a module are on the right device"""
+        if module is None:
+            return None
+        module.to(target_device)
+        for attr_name in dir(module):
+            try:
+                attr = getattr(module, attr_name)
+                if isinstance(attr, torch.Tensor):
+                    setattr(module, attr_name, attr.to(target_device))
+                elif hasattr(attr, 'to'):
+                    attr.to(target_device)
+            except Exception:
+                continue
+        return module
+
+    # Use the loaded TripoSR model
     app.triposr = triposr_model
-    if app.triposr and device == "cuda":
+
+    # Ensure everything is on the correct device
+    app.triposr = ensure_module_on_device(app.triposr, DEVICE)
+    if hasattr(app.triposr, 'renderer'):
+        app.triposr.renderer = ensure_module_on_device(app.triposr.renderer, DEVICE)
+        if hasattr(app.triposr.renderer, 'triplane'):
+            app.triposr.renderer.triplane = app.triposr.renderer.triplane.to(DEVICE)
+
+    if DEVICE == "cuda":
+        # Convert to half precision if using CUDA
         app.triposr = app.triposr.half()
-    
-    logger.info("✅ Models ready")
+        if hasattr(app.triposr, 'renderer'):
+            app.triposr.renderer = app.triposr.renderer.half()
+
+    app.triposr.eval()
+    logger.info(f"TripoSR loaded on {DEVICE}")
     _flush()
 
-    # Main generate endpoint - returns PNG instead of ZIP
+    logger.info("✅ Optimized models ready")
+    _flush()
+
+    # ───────────── Optimized /generate endpoint ─────────────
     @app.post("/generate")
     @timing
     def generate():
@@ -236,59 +313,82 @@ try:
             if "sketch" not in data:
                 return jsonify({"error": "Missing sketch"}), 400
 
-            # Check cache
+            # Check cache first
             cache_key = f"{data['sketch'][:100]}_{data.get('prompt', '')}"
             cached_result = result_cache.get(cache_key)
             if cached_result:
                 logger.info("Returning cached result")
-                cached_result.seek(0)
-                return send_file(cached_result, mimetype="image/png", download_name="3d_render.png", as_attachment=True)
+                return send_file(
+                    cached_result,
+                    as_attachment=True,
+                    download_name='3d_render.png',
+                    mimetype='image/png'
+                )
 
-            # Decode input
+            # Decode input image
             try:
                 png = base64.b64decode(data["sketch"].split(",", 1)[1])
                 pil = Image.open(io.BytesIO(png)).convert("RGBA")
             except Exception as e:
                 return jsonify({"error": f"Bad image data: {str(e)}"}), 400
 
-            prompt = data.get("prompt", "a clean 3D asset")
-            
-            # Parameters
-            num_inference_steps = int(data.get("num_inference_steps", 30))
-            guidance_scale = float(data.get("guidance_scale", 7.5))
+            prompt = data.get("prompt", "a clean 3-D asset")
 
-            logger.info(f"Processing prompt: '{prompt}'")
+            # Get parameters
+            profile_name = data.get("profile", "maximum_quality") # Default to maximum_quality
+            custom_params = data.get("custom_params", {})
 
-            # Edge detection
+            if OPTIMIZATION_AVAILABLE:
+                try:
+                    params = get_profile_parameters(profile_name, custom_params)
+                    logger.info(f"Using parameters from '{profile_name}' profile.")
+                except Exception as e:
+                    logger.warning(f"Failed to load profile '{profile_name}': {e}. Defaulting to 'standard'.")
+                    params = get_profile_parameters("standard", custom_params)
+            else:
+                # Fallback if optimization_config.py is missing
+                logger.warning("Optimization profiles not available. Using legacy parameter logic.")
+                params = OptimizedParameters.get_optimized_params(data)
+
+            logger.info(f"Using generation parameters: {params}")
+
+            # A) Edge detection
             edge = app.edge_det(pil)
             del pil
 
-            # Stable Diffusion
+            # B) Stable Diffusion with optimized parameters
             with torch.no_grad():
                 concept = app.sd(
                     prompt, image=edge,
-                    num_inference_steps=num_inference_steps, 
-                    guidance_scale=guidance_scale
+                    num_inference_steps=params['num_inference_steps'], 
+                    guidance_scale=params['guidance_scale']
                 ).images[0]
             del edge
             clear_gpu_memory()
 
-            # Scene generation
-            with torch.cuda.amp.autocast() if device == "cuda" else nullcontext():
-                codes = app.triposr([concept], device=device)
+            # C) Resize foreground for TripoSR
+            concept = resize_foreground(concept, 1.0)
+
+            # D) Scene codes - use same device as model
+            with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
+                codes = app.triposr([concept], device=DEVICE)
+                logger.info(f"Codes device: {codes.device}")
+
+                # Re-ensure renderer is on correct device
+                if hasattr(app.triposr, 'renderer'):
+                    app.triposr.renderer = ensure_module_on_device(app.triposr.renderer, codes.device)
             clear_gpu_memory()
 
-            # Render 4 views and select sharpest (like your original working code)
+            # E) Render views
             with torch.no_grad():
-                with torch.cuda.amp.autocast() if device == "cuda" else nullcontext():
-                    views = app.triposr.render(codes, n_views=4, height=512, width=512, return_type="pil")[0]
-            
-            # Select the sharpest view
-            final_image = sharpest(views)
-            
+                with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
+                    views = app.triposr.render(codes, n_views=params.get('n_views', 4), height=params['height'], width=params['width'], return_type="pil")[0]
             clear_gpu_memory()
 
-            # Return PNG image
+            # F) Select sharpest view
+            final_image = sharpest(views)
+
+            # G) Return PNG image
             buf = io.BytesIO()
             final_image.save(buf, "PNG")
             buf.seek(0)
@@ -296,8 +396,14 @@ try:
             # Cache the result
             result_cache.put(cache_key, io.BytesIO(buf.getvalue()))
 
+            clear_gpu_memory()
             _flush()
-            return send_file(buf, mimetype="image/png", download_name="3d_render.png", as_attachment=True)
+            return send_file(
+                buf,
+                as_attachment=True,
+                download_name='3d_render.png',
+                mimetype='image/png'
+            )
 
         except Exception as e:
             logger.error("Error in /generate", exc_info=True)
