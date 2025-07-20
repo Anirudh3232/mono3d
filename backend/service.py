@@ -208,14 +208,14 @@ def safe_resize_foreground(image, ratio=1.0):
         logger.info("Returning original image as fallback")
         return image
 
-# FIXED: Use TripoSR's built-in preprocessing
+# FIXED: Enhanced image preparation with post-background-removal RGB conversion
 def prepare_image_with_triposr_utils(pil_image, device):
-    """Use TripoSR's built-in preprocessing utilities"""
+    """Use TripoSR's built-in preprocessing utilities with proper RGB conversion"""
     try:
         # Import TripoSR preprocessing utilities
         from tsr.utils import resize_foreground, remove_background
         
-        # Ensure RGB format
+        # Ensure RGB format initially
         if pil_image.mode != 'RGB':
             if pil_image.mode == 'RGBA':
                 # Create white background and blend alpha
@@ -224,7 +224,7 @@ def prepare_image_with_triposr_utils(pil_image, device):
                 pil_image = white_background
             else:
                 pil_image = pil_image.convert('RGB')
-            logger.info(f"✅ Converted to RGB format")
+            logger.info(f"✅ Initial conversion to RGB format")
         
         # Use TripoSR's resize_foreground utility
         try:
@@ -239,8 +239,23 @@ def prepare_image_with_triposr_utils(pil_image, device):
         try:
             processed_image = remove_background(processed_image)
             logger.info("✅ Used TripoSR remove_background")
+            
+            # FIXED: Convert back to RGB after background removal
+            if processed_image.mode == 'RGBA':
+                logger.info("🔄 Converting RGBA back to RGB after background removal")
+                # Create white background for transparency
+                white_background = Image.new('RGB', processed_image.size, (255, 255, 255))
+                white_background.paste(processed_image, mask=processed_image.split()[-1])
+                processed_image = white_background
+                logger.info("✅ Successfully converted RGBA to RGB")
+            
         except Exception as e:
             logger.warning(f"TripoSR remove_background failed: {e}, skipping")
+        
+        # Final RGB validation
+        if processed_image.mode != 'RGB':
+            logger.warning(f"Final mode is {processed_image.mode}, converting to RGB")
+            processed_image = processed_image.convert('RGB')
         
         logger.info(f"✅ Image preprocessed with TripoSR utils: {processed_image.size}, mode: {processed_image.mode}")
         return processed_image
@@ -249,7 +264,12 @@ def prepare_image_with_triposr_utils(pil_image, device):
         logger.error(f"TripoSR preprocessing failed: {e}")
         # Fallback to basic RGB conversion
         if pil_image.mode != 'RGB':
-            pil_image = pil_image.convert('RGB')
+            if pil_image.mode == 'RGBA':
+                white_background = Image.new('RGB', pil_image.size, (255, 255, 255))
+                white_background.paste(pil_image, mask=pil_image.split()[-1])
+                pil_image = white_background
+            else:
+                pil_image = pil_image.convert('RGB')
         return pil_image.resize((256, 256), Image.Resampling.LANCZOS)
 
 class OptimizedParameters:
@@ -306,7 +326,7 @@ def sharpest(img_list):
         logger.warning("OpenCV not available, returning first image")
         return img_list[0] if img_list else None
 
-# Marching cubes fallback (keeping existing implementation)
+# Marching cubes fallback
 try:
     import torchmcubes
     logger.info("✅ Using torchmcubes")
@@ -577,14 +597,14 @@ try:
                 logger.error(f"All resize methods failed: {e}")
                 return jsonify({"error": f"Resize failed: {str(e)}"}), 500
 
-            # FIXED: TripoSR processing with built-in preprocessing
+            # FIXED: TripoSR processing with proper RGB conversion
             try:
-                # Use TripoSR's own preprocessing utilities
+                # Use TripoSR's own preprocessing utilities with RGB conversion fix
                 concept_prepared = prepare_image_with_triposr_utils(concept, DEVICE)
                 
                 with torch.no_grad():
                     with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
-                        logger.info("Calling TripoSR with preprocessed image")
+                        logger.info("Calling TripoSR with RGB preprocessed image")
                         # Pass the preprocessed image to TripoSR
                         raw_codes = app.triposr([concept_prepared], device=DEVICE)
                         codes = ensure_tensor_from_output(raw_codes)
