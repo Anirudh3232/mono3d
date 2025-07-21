@@ -12,7 +12,78 @@ from contextlib import nullcontext
 import psutil
 import subprocess
 
-# ENHANCED COMPATIBILITY PATCHES - Must come first
+# CRITICAL FIX: Create torchmcubes mock BEFORE any TripoSR imports
+def setup_torchmcubes_fallback():
+    """Setup torchmcubes fallback before TripoSR imports it"""
+    try:
+        import torchmcubes
+        logger.info("✅ Using real torchmcubes")
+        return
+    except ImportError:
+        logger.info("🔧 Creating torchmcubes fallback module")
+        
+        # Try PyMCubes first
+        try:
+            import PyMCubes
+            import numpy as _np
+            import torch as _torch
+            
+            def _marching_cubes(vol: _torch.Tensor, thresh: float = 0.0):
+                vol_numpy = vol.detach().cpu().numpy()
+                if vol_numpy.strides and any(s < 0 for s in vol_numpy.strides):
+                    vol_numpy = vol_numpy.copy()
+                
+                v, f = PyMCubes.marching_cubes(vol_numpy, thresh)
+                return (_torch.from_numpy(v).to(vol.device, dtype=vol.dtype),
+                        _torch.from_numpy(f.astype(_np.int64)).to(vol.device))
+            
+            # Create mock torchmcubes module
+            mock_torchmcubes = types.ModuleType("torchmcubes")
+            mock_torchmcubes.marching_cubes = _marching_cubes
+            sys.modules["torchmcubes"] = mock_torchmcubes
+            logger.info("✅ Created torchmcubes fallback using PyMCubes")
+            return
+            
+        except ImportError:
+            pass
+        
+        # Try scikit-image fallback
+        try:
+            from skimage import measure
+            import numpy as _np
+            import torch as _torch
+            
+            def _marching_cubes(vol: _torch.Tensor, thresh: float = 0.0):
+                vol_numpy = vol.detach().cpu().numpy()
+                if vol_numpy.strides and any(s < 0 for s in vol_numpy.strides):
+                    vol_numpy = vol_numpy.copy()
+                
+                verts, faces, _, _ = measure.marching_cubes(vol_numpy, level=thresh)
+                return (_torch.from_numpy(verts).to(vol.device, dtype=vol.dtype),
+                        _torch.from_numpy(faces.astype(_np.int64)).to(vol.device))
+            
+            # Create mock torchmcubes module
+            mock_torchmcubes = types.ModuleType("torchmcubes")
+            mock_torchmcubes.marching_cubes = _marching_cubes
+            sys.modules["torchmcubes"] = mock_torchmcubes
+            logger.info("✅ Created torchmcubes fallback using scikit-image")
+            return
+            
+        except ImportError:
+            pass
+        
+        # Ultimate fallback - create a dummy module
+        def _dummy_marching_cubes(vol, thresh=0.0):
+            logger.error("No marching cubes implementation available - returning empty mesh")
+            device = vol.device if hasattr(vol, 'device') else 'cpu'
+            return (torch.zeros((0, 3), device=device), torch.zeros((0, 3), dtype=torch.long, device=device))
+        
+        mock_torchmcubes = types.ModuleType("torchmcubes")
+        mock_torchmcubes.marching_cubes = _dummy_marching_cubes
+        sys.modules["torchmcubes"] = mock_torchmcubes
+        logger.warning("⚠️ Created dummy torchmcubes fallback")
+
+# ENHANCED COMPATIBILITY PATCHES
 import transformers
 
 class MockCache:
@@ -132,6 +203,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# CRITICAL: Setup torchmcubes fallback BEFORE importing TripoSR
+setup_torchmcubes_fallback()
+
 def timing(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
@@ -159,23 +233,7 @@ def clear_gpu_memory():
 def gpu_mem_mb():
     return (torch.cuda.memory_allocated() / 1024 ** 2) if torch.cuda.is_available() else 0
 
-# CRITICAL FIX: Deep tensor stride patching
-def ensure_contiguous_tensor(tensor_or_array):
-    """Ultimate stride safety for any tensor or array"""
-    if isinstance(tensor_or_array, torch.Tensor):
-        if not tensor_or_array.is_contiguous():
-            logger.debug("🔧 Making tensor contiguous")
-            return tensor_or_array.contiguous()
-        return tensor_or_array
-    elif isinstance(tensor_or_array, np.ndarray):
-        if tensor_or_array.strides and any(s < 0 for s in tensor_or_array.strides):
-            logger.debug("🔧 Fixing negative strides in numpy array")
-            return np.ascontiguousarray(tensor_or_array)
-        return tensor_or_array
-    else:
-        return tensor_or_array
-
-# CRITICAL FIX: Patch torch.from_numpy globally
+# Global torch.from_numpy patching
 _original_from_numpy = torch.from_numpy
 def patched_from_numpy(ndarray):
     """Patched torch.from_numpy that always handles stride issues"""
@@ -230,12 +288,10 @@ def safe_resize_foreground(image, ratio=1.0):
         logger.error(f"Safe resize failed: {str(e)}")
         return image
 
-# CRITICAL FIX: Ultimate stride-safe preprocessing
 def bulletproof_image_preprocessing(input_image):
     """Bulletproof image preprocessing that eliminates all stride issues"""
     def create_clean_image(img):
         """Create a completely clean image with guaranteed positive strides"""
-        # Convert to numpy with stride safety
         img_array = np.ascontiguousarray(np.array(img))
         
         # Ensure RGB format
@@ -246,7 +302,6 @@ def bulletproof_image_preprocessing(input_image):
             white_bg = np.ones_like(rgb) * 255
             img_array = (rgb * alpha + white_bg * (1 - alpha)).astype(np.uint8)
         
-        # Create new PIL image from clean array
         return Image.fromarray(img_array)
     
     try:
@@ -254,21 +309,18 @@ def bulletproof_image_preprocessing(input_image):
         if input_image.mode != 'RGB':
             input_image = create_clean_image(input_image.convert('RGBA'))
         
-        # Apply any processing with stride safety
+        # Apply processing with stride safety
         try:
             # Try background removal if available
             import rembg
             from tsr.utils import remove_background, resize_foreground
             
-            # Create ultra-clean input
             clean_input = create_clean_image(input_image)
             
-            # Process with rembg
             rembg_session = rembg.new_session()
             processed = remove_background(clean_input, rembg_session)
             processed = resize_foreground(processed, 0.85)
             
-            # Final clean conversion
             result = create_clean_image(processed)
             logger.info("✅ Background removal with bulletproof stride safety")
             return result
@@ -282,7 +334,6 @@ def bulletproof_image_preprocessing(input_image):
             
     except Exception as e:
         logger.error(f"Bulletproof preprocessing failed: {e}")
-        # Ultimate fallback - create completely new image
         img_array = np.ascontiguousarray(np.array(input_image.convert('RGB')))
         return Image.fromarray(img_array)
 
@@ -335,7 +386,6 @@ def sharpest(img_list):
         import cv2
         scores = []
         for i in img_list:
-            # Ultimate stride safety
             img_array = np.ascontiguousarray(np.array(i))
             gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
             score = cv2.Laplacian(gray, cv2.CV_64F).var()
@@ -346,7 +396,7 @@ def sharpest(img_list):
         logger.warning("OpenCV not available, returning first image")
         return img_list[0] if img_list else None
 
-print("Starting bulletproof stride-safe TripoSR service initialization...")
+print("Starting image-only TripoSR service initialization...")
 try:
     logger.info("Importing diffusers...")
     _flush()
@@ -354,7 +404,7 @@ try:
     from controlnet_aux import CannyDetector
 
     # TripoSR setup
-    logger.info("Setting up TripoSR with deep stride patching...")
+    logger.info("Setting up TripoSR for image-only output...")
     triposr_path = os.path.join(os.path.dirname(__file__), "TripoSR-main")
     if not os.path.exists(triposr_path):
         logger.info("Cloning TripoSR from GitHub...")
@@ -372,38 +422,19 @@ try:
     if triposr_path not in sys.path:
         sys.path.insert(0, triposr_path)
 
-    # Import TripoSR
+    # Import TripoSR - REMOVED mesh-related imports
     try:
         from tsr.system import TSR
-        from tsr.utils import resize_foreground, remove_background, to_gradio_3d_orientation
-        logger.info("✅ TripoSR imported successfully")
+        from tsr.utils import resize_foreground, remove_background
+        # REMOVED: to_gradio_3d_orientation import to prevent mesh exports
+        logger.info("✅ TripoSR imported for image-only processing")
     except ImportError as e:
         logger.error(f"❌ TripoSR import failed: {e}")
         raise
 
-    # CRITICAL: Apply deep stride patching to TripoSR's internal functions
-    try:
-        import tsr.models.transformer
-        import tsr.models.network
-        
-        # Patch any tensor creation in TripoSR modules
-        for module_name in ['tsr.models.transformer', 'tsr.models.network']:
-            try:
-                module = sys.modules.get(module_name)
-                if module:
-                    # Patch tensor operations in the module
-                    original_torch_from_numpy = getattr(module, 'torch', torch).from_numpy
-                    setattr(getattr(module, 'torch', torch), 'from_numpy', patched_from_numpy)
-                    logger.info(f"✅ Deep patched {module_name}")
-            except Exception as patch_error:
-                logger.debug(f"Could not patch {module_name}: {patch_error}")
-                
-    except Exception as deep_patch_error:
-        logger.debug(f"Deep patching not available: {deep_patch_error}")
-
-    # Load models with quality optimization
+    # Load models
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Loading models on {DEVICE} with bulletproof stride safety...")
+    logger.info(f"Loading models on {DEVICE} for image-only output...")
     
     if DEVICE == "cuda":
         torch.backends.cudnn.benchmark = True
@@ -423,7 +454,7 @@ try:
     triposr_model.renderer.set_chunk_size(8192)
     
     clear_gpu_memory()
-    logger.info("✅ TripoSR loaded with bulletproof stride protection")
+    logger.info("✅ TripoSR loaded for image-only output")
 
     app = Flask(__name__)
     CORS(app)
@@ -437,12 +468,12 @@ try:
             "memory_percent": psutil.virtual_memory().percent,
             "triposr_available": True,
             "precision": "float32",
-            "stride_protection": "bulletproof"
+            "output_mode": "image_only"
         })
 
     @app.route("/test", methods=["GET", "POST"])
     def test():
-        return jsonify({"message": "Bulletproof stride-safe TripoSR server!", "method": request.method})
+        return jsonify({"message": "Image-only TripoSR server!", "method": request.method})
 
     # Load other models
     logger.info("Loading edge detector...")
@@ -466,7 +497,6 @@ try:
     
     app.sd.scheduler = EulerAncestralDiscreteScheduler.from_config(app.sd.scheduler.config)
     
-    # Enable optimizations
     try:
         app.sd.enable_xformers_memory_efficient_attention()
         logger.info("✅ xformers enabled")
@@ -491,7 +521,7 @@ try:
     app.triposr = ensure_module_on_device(app.triposr, DEVICE)
     
     clear_gpu_memory()
-    logger.info("✅ All models loaded with bulletproof protection")
+    logger.info("✅ All models loaded for image-only processing")
     _flush()
 
     @app.route("/generate", methods=["POST"])
@@ -509,7 +539,7 @@ try:
             cache_key = f"{data['sketch'][:50]}_{data.get('prompt', '')}"
             cached_result = result_cache.get(cache_key)
             if cached_result:
-                logger.info("Returning cached result")
+                logger.info("Returning cached image result")
                 cached_result.seek(0)
                 return send_file(
                     cached_result, 
@@ -518,7 +548,7 @@ try:
                     as_attachment=True
                 )
 
-            # Decode input image with bulletproof stride safety
+            # Decode input image
             try:
                 sketch_data = data["sketch"]
                 if "," in sketch_data:
@@ -528,7 +558,6 @@ try:
                 
                 pil = Image.open(io.BytesIO(png))
                 
-                # Bulletproof image creation
                 pil_array = np.ascontiguousarray(np.array(pil))
                 pil = Image.fromarray(pil_array)
                 
@@ -541,18 +570,17 @@ try:
                 logger.error(f"Image decode error: {e}")
                 return jsonify({"error": f"Bad image data: {str(e)}"}), 400
 
-            # CRITICAL: Handle NSFW content proactively
+            # Handle NSFW content proactively
             prompt = data.get("prompt", "a simple geometric 3D object")
-            # Add safety keywords to prevent NSFW detection
             if "cube" in prompt.lower():
                 prompt = "a simple geometric cube shape, clean minimal design"
             
             params = QualityOptimizedParameters.get_quality_params(data)
-            logger.info(f"Using bulletproof parameters: {params}")
+            logger.info(f"Using image-only parameters: {params}")
 
             clear_gpu_memory()
 
-            # Edge detection with bulletproof safety
+            # Edge detection
             try:
                 edge = app.edge_det(pil)
                 edge_array = np.ascontiguousarray(np.array(edge))
@@ -563,7 +591,7 @@ try:
                 logger.error(f"Edge detection failed: {e}")
                 return jsonify({"error": f"Edge detection failed: {str(e)}"}), 500
 
-            # Stable Diffusion with NSFW handling
+            # Stable Diffusion
             try:
                 with torch.no_grad():
                     with torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext():
@@ -582,17 +610,15 @@ try:
                         
                         # Check if we got NSFW black image
                         concept_array = np.array(concept)
-                        if np.all(concept_array < 10):  # Mostly black image
+                        if np.all(concept_array < 10):
                             logger.warning("NSFW detected, creating fallback geometric image")
-                            # Create a simple geometric fallback
                             fallback = Image.new('RGB', (512, 512), (240, 240, 240))
                             concept = fallback
                         
-                        # Bulletproof concept processing
                         concept_array = np.ascontiguousarray(np.array(concept))
                         concept = Image.fromarray(concept_array)
                         
-                        logger.info(f"Bulletproof concept ready: {concept.size}")
+                        logger.info(f"Concept ready for image-only processing: {concept.size}")
                         
                 del edge, result
                 clear_gpu_memory()
@@ -600,69 +626,48 @@ try:
                 logger.error(f"Stable Diffusion failed: {e}")
                 return jsonify({"error": f"Stable Diffusion failed: {str(e)}"}), 500
 
-            # Bulletproof resize
+            # Resize
             try:
                 concept = safe_resize_foreground(concept, 1.0)
                 if concept is None:
                     raise ValueError("Concept is None after resize")
                 clear_gpu_memory()
-                logger.info("✅ Bulletproof resize completed")
+                logger.info("✅ Resize completed for image processing")
             except Exception as e:
                 logger.error(f"Resize failed: {e}")
                 return jsonify({"error": f"Resize failed: {str(e)}"}), 500
 
-            # CRITICAL: TripoSR with ultimate stride protection
+            # FIXED: TripoSR processing for IMAGE-ONLY output (no mesh extraction/export)
             try:
-                # Bulletproof preprocessing
                 processed_image = bulletproof_image_preprocessing(concept)
                 
                 with torch.no_grad():
-                    logger.info("Calling TripoSR with bulletproof stride protection")
+                    logger.info("Processing TripoSR for image-only output")
                     
-                    # The critical fix - ensure processed_image is completely clean
                     final_array = np.ascontiguousarray(np.array(processed_image))
                     processed_image = Image.fromarray(final_array)
                     
-                    # Call TripoSR with bulletproof input
+                    # Generate scene codes for rendering (without mesh extraction)
                     scene_codes = app.triposr(processed_image, device=DEVICE)
                     
-                    # Extract mesh
-                    mesh = app.triposr.extract_mesh(
-                        scene_codes, 
-                        resolution=params['mc_resolution']
+                    # FIXED: Skip mesh extraction and go directly to view rendering
+                    # This eliminates OBJ file generation
+                    
+                    # Render multiple views directly from scene codes
+                    rendered_views = app.triposr.render(
+                        scene_codes,
+                        n_views=params['n_views'],
+                        return_type="pil"
                     )[0]
                     
-                    mesh = to_gradio_3d_orientation(mesh)
                     del scene_codes, processed_image
+                    views = rendered_views
                     
                 clear_gpu_memory()
-
-                # Generate views
-                try:
-                    with torch.no_grad():
-                        # Create bulletproof concept for rendering
-                        render_array = np.ascontiguousarray(np.array(concept))
-                        render_image = Image.fromarray(render_array)
-                        
-                        temp_scene_codes = app.triposr(render_image, device=DEVICE)
-                        rendered_views = app.triposr.render(
-                            temp_scene_codes,
-                            n_views=params['n_views'],
-                            return_type="pil"
-                        )[0]
-                        
-                        del temp_scene_codes
-                        views = rendered_views
-                    
-                    clear_gpu_memory()
-                    logger.info(f"✅ Generated {len(views)} bulletproof views")
-                    
-                except Exception as render_error:
-                    logger.warning(f"Multi-view rendering failed: {render_error}")
-                    views = [concept]
+                logger.info(f"✅ Generated {len(views)} image views (no mesh files)")
                     
             except Exception as e:
-                logger.error(f"TripoSR processing failed: {e}")
+                logger.error(f"TripoSR image processing failed: {e}")
                 return jsonify({"error": f"TripoSR processing failed: {str(e)}"}), 500
 
             # Select best view
@@ -673,17 +678,16 @@ try:
                 if final_image is None:
                     return jsonify({"error": "Failed to generate final image"}), 500
 
-                # Final bulletproofing
                 final_array = np.ascontiguousarray(np.array(final_image))
                 final_image = Image.fromarray(final_array)
 
-                logger.info("✅ Selected bulletproof final image")
+                logger.info("✅ Selected final 3D image (no additional files)")
 
             except Exception as e:
                 logger.error(f"View selection failed: {e}")
                 return jsonify({"error": f"View selection failed: {str(e)}"}), 500
 
-            # Return result
+            # Return ONLY the image
             try:
                 buf = io.BytesIO()
                 final_image.save(buf, "PNG", optimize=False, compress_level=1)
@@ -696,7 +700,7 @@ try:
                 return send_file(
                     buf, 
                     mimetype="image/png", 
-                    download_name="3d_render_bulletproof.png", 
+                    download_name="3d_render_image_only.png", 
                     as_attachment=True
                 )
             except Exception as e:
@@ -715,7 +719,7 @@ try:
             return jsonify({"error": f"Server error: {str(e)}"}), 500
 
     if __name__ == "__main__":
-        logger.info("🚀 Starting BULLETPROOF TripoSR service with deep stride protection")
+        logger.info("🚀 Starting IMAGE-ONLY TripoSR service")
         app.run(host="0.0.0.0", port=5000, debug=False)
 
 except Exception as e:
