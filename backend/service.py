@@ -60,9 +60,9 @@ def timed(fn):
         return out
     return _wrap
 
-# ------------------------------------------------------------------#
+
 # 3.  GPU helpers
-# ------------------------------------------------------------------#
+
 def clear_gpu():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
