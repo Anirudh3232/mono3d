@@ -22,7 +22,7 @@ import torch
 from torch.cuda.amp import autocast
 from contextlib import nullcontext
 
-# ------------------------------------------------------------------#
+# ------------------------------------------------------------------
 # 1.  Compatibility shims for HuggingFace / diffusers (MockCache)
 # ------------------------------------------------------------------#
 import transformers
