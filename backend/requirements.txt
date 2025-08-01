@@ -6,7 +6,7 @@ torchaudio==2.2.2+cu118
 
 # Diffusion stack 
 diffusers==0.24.0
-transformers==4.35.0
+transformers==4.36.2
 accelerate==0.24.1
 controlnet-aux==0.0.7
 huggingface_hub==0.19.4 
