@@ -3,7 +3,7 @@ torch==2.2.2+cu118
 torchvision==0.17.2+cu118
 torchaudio==2.2.2+cu118
 -f https://download.pytorch.org/whl/torch_stable.html
-pymcubes>=0.1.4
+
 # ────────── Diffusers & Transformers Stack ───────────
 diffusers==0.27.2
 transformers==4.38.2
@@ -17,6 +17,7 @@ einops==0.7.0
 omegaconf==2.3.0
 scipy>=1.10.0,<1.12.0
 trimesh==4.4.0
+PyMCubes==0.1.4          # ← correct package name & version
 
 # ─────────────── Image & Numerics ───────────────
 numpy>=1.23.0,<1.27.0
@@ -34,7 +35,7 @@ Flask-Cors==4.0.1
 # ─────────────── System Monitoring ───────────────
 psutil>=5.9.0,<6.0.0
 
-
+# ─────────────── ONNX runtime (optional for rembg) ───────────────
 onnxruntime>=1.16.0,<2.0.0
 
 # ─────────────── Testing ───────────────
