@@ -1,42 +1,32 @@
-# ───────────────── PyTorch & CUDA ──────────────────
+# Core (PyTorch + CUDA 11.8) 
 torch==2.2.2+cu118
 torchvision==0.17.2+cu118
 torchaudio==2.2.2+cu118
 -f https://download.pytorch.org/whl/torch_stable.html
 
-# ────────── Diffusers & Transformers Stack ───────────
-diffusers==0.27.2
-transformers==4.38.2
-peft==0.10.0
-accelerate==0.27.2
-huggingface-hub==0.25.1
+# Diffusion stack 
+diffusers==0.24.0
+transformers==4.35.0
+accelerate==0.24.1
 controlnet-aux==0.0.7
-
-# ────────── Core TripoSR Dependencies ────────────
+huggingface_hub==0.19.4 
 einops==0.7.0
 omegaconf==2.3.0
-scipy>=1.10.0,<1.12.0
-trimesh==4.4.0
-PyMCubes==0.1.4          # ← correct package name & version
+timm==0.9.16
 
-# ─────────────── Image & Numerics ───────────────
-numpy>=1.23.0,<1.27.0
-Pillow>=9.5.0,<11.0.0
-opencv-python>=4.8.0
+# TripoSR & image utils 
+pymcubes==0.1.4
+git+https://github.com/tatsy/torchmcubes.git
+trimesh==4.4.0
+rembg>=2.0.53,<3.0.0
+scipy>=1.10.0,<1.12.0
+
+numpy>=1.23,<1.27
+Pillow>=9.5,<11.0.0
 imageio==2.34.0
 
-# ─────────────── Background removal ───────────────
-rembg>=2.0.53,<3.0.0
-
-# ─────────────── API Server ───────────────
+#  API server & monitoring 
 Flask==3.0.3
 Flask-Cors==4.0.1
-
-# ─────────────── System Monitoring ───────────────
-psutil>=5.9.0,<6.0.0
-
-# ─────────────── ONNX runtime (optional for rembg) ───────────────
-onnxruntime>=1.16.0,<2.0.0
-
-# ─────────────── Testing ───────────────
-requests>=2.31.0,<3.0.0
+psutil>=5.9,<6.0
+requests>=2.31,<3.0
