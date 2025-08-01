@@ -1,225 +1,223 @@
-"""
-Memory-optimised TripoSR + Stable-Diffusion server
---------------------------------------------------
-• Handles RGBA→RGB conversion.
-• Converts PIL images to tensors before feeding TripoSR.
-• Avoids channel-mismatch & dtype errors.
-• Includes aggressive GPU-memory management and result caching.
-"""
 
-from __future__ import annotations
-import os, sys, io, gc, time, base64, logging, atexit, subprocess
+
+import io, os, sys, time, base64, gc, logging, atexit
 from functools import wraps
-from typing import Dict
+from contextlib import nullcontext
 
+# ── third-party -------------------------------------------------------
 import numpy as np
 import psutil
+import torch
 from PIL import Image
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 
-import torch
-from torch.cuda.amp import autocast
-from contextlib import nullcontext
+# ── paths -------------------------------------------------------------
+TRIPOSR_PATH = os.path.join(os.path.dirname(__file__), "TripoSR-main")
+sys.path.insert(0, TRIPOSR_PATH)
 
-# ------------------------------------------------------------------
-# 1.  Compatibility shims for HuggingFace / diffusers (MockCache)
-# ------------------------------------------------------------------#
-import transformers
-class _MockCache:
-    def __call__(self, *a, **k): return a[0] if a else None
-    def update(self, *a, **k):   pass
-    def forward(self, *a, **k):  return a[0] if a else None
-for name in ("Cache", "DynamicCache", "EncoderDecoderCache", "HybridCache"):
-    setattr(transformers, name, _MockCache)
+# ── disable CUDA-only torchmcubes so PyMCubes fallback works ----------
+os.environ["TSR_DISABLE_TORCHMCUBES"] = "1"
 
-try:
-    import diffusers.models.attention_processor as _dap
-    _dap.AttnProcessor2_0 = _MockCache
-except ImportError:
-    pass
-# ------------------------------------------------------------------#
-# 2.  Logging helpers
-# ------------------------------------------------------------------#
+# ── logging -----------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s  %(levelname)s │ %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("service.log")]
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler("service.log")],
 )
 log = logging.getLogger(__name__)
+atexit.register(lambda: (sys.stdout.flush(), sys.stderr.flush()))
 
-def _flush(): sys.stdout.flush(), sys.stderr.flush()
-atexit.register(_flush)
-
-def timed(fn):
+# ── timing decorator --------------------------------------------------
+def timing(fn):
     @wraps(fn)
-    def _wrap(*a, **k):
-        t0, cpu0 = time.time(), psutil.cpu_percent(None)
-        out      = fn(*a, **k)
-        log.info(f"{fn.__name__} › {time.time()-t0:.2f}s  CPU {cpu0:.1f}→{psutil.cpu_percent(None):.1f}%")
-        return out
-    return _wrap
+    def wrap(*a, **k):
+        start, cpu0 = time.time(), psutil.cpu_percent(None)
+        result = fn(*a, **k)
+        end, cpu1 = time.time(), psutil.cpu_percent(None)
+        log.info(f"{fn.__name__}: {end - start:.2f}s | CPU {cpu0:.1f}%→{cpu1:.1f}%")
+        return result
+
+    return wrap
 
 
-# 3.  GPU helpers
+# ── tiny LRU cache (last 10 responses) --------------------------------
+class LRU:
+    def __init__(self, n=10):
+        self.n, self.d, self.o = n, {}, []
 
+    def get(self, k):
+        if k in self.d:
+            self.o.remove(k)
+            self.o.append(k)
+            return self.d[k]
+
+    def put(self, k, v):
+        if len(self.d) >= self.n:
+            del self.d[self.o.pop(0)]
+        self.d[k] = v
+        self.o.append(k)
+
+
+cache = LRU()
+
+# ── helpers -----------------------------------------------------------
 def clear_gpu():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-        torch.cuda.synchronize()
-    gc.collect()
+        gc.collect()
 
-def gpu_mem_mb() -> float:
-    return torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0
 
-# ------------------------------------------------------------------#
-# 4.  Parameter defaults
-# ------------------------------------------------------------------#
-class Opt:
-    STEPS      = 20
-    GUIDANCE   = 7.0
-    N_VIEWS    = 2
-    HEIGHT     = 256
-    WIDTH      = 256
-
-# ------------------------------------------------------------------#
-# 5.  Tiny in-RAM result cache
-# ------------------------------------------------------------------#
-class _Cache:
-    def __init__(self, max_items=5):
-        self._data: Dict[str, bytes] = {}
-        self._order: list[str] = []
-        self.max = max_items
-
-    def get(self, k): return self._data.get(k)
-    def add(self, k, v: bytes):
-        if k in self._data: self._order.remove(k)
-        elif len(self._order) >= self.max:
-            oldest = self._order.pop(0); self._data.pop(oldest, None)
-        self._data[k] = v; self._order.append(k)
-
-cache = _Cache()
-
-# ------------------------------------------------------------------#
-# 6.  Image utilities
-# ------------------------------------------------------------------#
-def rgba_to_rgb(im: Image.Image) -> Image.Image:
-    if im.mode == "RGBA":
-        bg = Image.new("RGB", im.size, (255, 255, 255))
-        bg.paste(im, mask=im.split()[-1])
-        return bg
-    return im.convert("RGB") if im.mode != "RGB" else im
-
-def pil_to_tensor(im: Image.Image, device: str) -> torch.Tensor:
-    im = rgba_to_rgb(im).resize((512, 512), Image.LANCZOS)
-    arr = torch.from_numpy(np.array(im)).float() / 255.0       # HWC
-    tensor = arr.permute(2, 0, 1).unsqueeze(0).to(device)      # BCHW
-    return tensor
-
-# ------------------------------------------------------------------#
-# 7.  Model loading
-# ------------------------------------------------------------------#
+# ── model loading -----------------------------------------------------
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, EulerAncestralDiscreteScheduler
+log.info(f"▶ loading models on {DEVICE}")
+
+from diffusers import (
+    StableDiffusionControlNetPipeline,
+    ControlNetModel,
+    EulerAncestralDiscreteScheduler,
+)
 from controlnet_aux import CannyDetector
 
-# --- clone / import TripoSR ---------------------------------------------------
-ROOT = os.path.dirname(__file__)
-TRIPOSR_DIR = os.path.join(ROOT, "TripoSR-main")
-if not os.path.exists(TRIPOSR_DIR):
-    log.info("Cloning TripoSR...")
-    subprocess.run(["git", "clone", "https://github.com/VAST-AI-Research/TripoSR.git", TRIPOSR_DIR], check=True)
-sys.path.insert(0, TRIPOSR_DIR)
 from tsr.system import TSR
+from tsr.utils import resize_foreground, remove_background  # foreground helpers
 
-log.info("Loading models …")
-canny           = CannyDetector()
-controlnet      = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-canny", torch_dtype=torch.float16).to(DEVICE)
-sd              = StableDiffusionControlNetPipeline.from_pretrained(
-                    "runwayml/stable-diffusion-v1-5",
-                    controlnet=controlnet,
-                    torch_dtype=torch.float16).to(DEVICE)
-sd.scheduler    = EulerAncestralDiscreteScheduler.from_config(sd.scheduler.config)
-sd.enable_attention_slicing(); sd.enable_vae_slicing(); sd.enable_model_cpu_offload()
+# Canny with slightly higher thresholds (thicker lines → better guidance)
+edge_det = CannyDetector(low_threshold=64, high_threshold=128)
 
-triposr         = TSR.from_pretrained("stabilityai/TripoSR", config_name="config.yaml", weight_name="model.ckpt").to(DEVICE)
-if DEVICE == "cuda": triposr = triposr.half()
-triposr.eval()
-clear_gpu()
-log.info("✅ All models ready")
+cnet = ControlNetModel.from_pretrained(
+    "lllyasviel/sd-controlnet-canny", torch_dtype=torch.float16
+).to(DEVICE)
 
-# ------------------------------------------------------------------#
-# 8.  Flask app
-# ------------------------------------------------------------------#
+sd = StableDiffusionControlNetPipeline.from_pretrained(
+    "runwayml/stable-diffusion-v1-5",
+    controlnet=cnet,
+    torch_dtype=torch.float16,
+).to(DEVICE)
+sd.scheduler = EulerAncestralDiscreteScheduler.from_config(sd.scheduler.config)
+try:
+    sd.enable_xformers_memory_efficient_attention()
+except Exception:
+    log.warning("xformers not available")
+sd.enable_model_cpu_offload()
+sd.enable_attention_slicing()
+
+tsr = (
+    TSR.from_pretrained(
+        "stabilityai/TripoSR", config_name="config.yaml", weight_name="model.ckpt"
+    )
+    .to(DEVICE)
+    .eval()
+)
+if hasattr(tsr, "renderer"):
+    tsr.renderer.set_chunk_size(8192)
+
+log.info("✔ models ready")
+
+# ── Flask app ---------------------------------------------------------
 app = Flask(__name__)
 CORS(app)
 
-@app.route("/health")
-def _health():
-    return jsonify(status="ok", gpu_mb=gpu_mem_mb(), cpu_pct=psutil.cpu_percent(None))
 
-# ------------------------------------------------------------------#
-# 9.  /generate endpoint
-# ------------------------------------------------------------------#
-@app.route("/generate", methods=["POST"])
-@timed
+@app.get("/health")
+def health():
+    """Simple health-check endpoint."""
+    return jsonify(
+        status="ok",
+        gpu_mb=(
+            torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0
+        ),
+        cpu=psutil.cpu_percent(None),
+        mem=psutil.virtual_memory().percent,
+    )
+
+
+# ── helper: choose sharpest image out of N views ----------------------
+def sharpest(img_list):
+    """Return the PIL image with highest Laplacian variance."""
+    import cv2
+
+    scores = [
+        cv2.Laplacian(cv2.cvtColor(np.array(i), cv2.COLOR_RGBA2GRAY), cv2.CV_64F).var()
+        for i in img_list
+    ]
+    return img_list[int(np.argmax(scores))]
+
+
+# ── /generate ---------------------------------------------------------
+@app.post("/generate")
+@timing
 def generate():
+    if not request.is_json:
+        return jsonify(error="JSON body required"), 400
+    data = request.json
+    if "sketch" not in data:
+        return jsonify(error="missing 'sketch'"), 400
+
+    # ── LRU cache hit? -------------------------------------------------
+    key = data["sketch"][:120] + data.get("prompt", "")
+    if (buf := cache.get(key)) is not None:
+        return send_file(
+            buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True
+        )
+
+    # ── decode PNG → PIL ---------------------------------------------
     try:
-        if not request.is_json:         return jsonify(error="JSON body required"), 400
-        data = request.get_json()
-        if "sketch" not in data:        return jsonify(error="missing 'sketch'"), 400
-
-        # ---- quick cache ----------------------------------------------------
-        key = (data["sketch"][:80] + data.get("prompt", ""))[:256]
-        if (hit := cache.get(key)):
-            return send_file(io.BytesIO(hit), mimetype="image/png")
-
-        # ---- decode input ---------------------------------------------------
-        b64 = data["sketch"].split(",", 1)[1] if "," in data["sketch"] else data["sketch"]
-        sketch = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGBA")
-        prompt = data.get("prompt", "a clean 3-D asset")
-
-        # ---- edge map -------------------------------------------------------
-        edge = canny(sketch.resize((512, 512), Image.LANCZOS))
-
-        # ---- stable-diffusion ----------------------------------------------
-        with torch.no_grad(), (autocast() if DEVICE == "cuda" else nullcontext()):
-            out   = sd(prompt, image=edge,
-                       num_inference_steps=int(data.get("num_inference_steps", Opt.STEPS)),
-                       guidance_scale=float(data.get("guidance_scale", Opt.GUIDANCE)),
-                       return_dict=True)
-            concept_img = out.images[0]
-
-        # ---- TripoSR: PIL → tensor  ----------------------------------------
-        tensor_input = pil_to_tensor(concept_img, DEVICE)
-        with torch.no_grad(), (autocast() if DEVICE == "cuda" else nullcontext()):
-            codes = triposr(tensor_input)
-            views = triposr.render(
-                        codes,
-                        n_views=int(data.get("n_views", Opt.N_VIEWS)),
-                        height=int(data.get("height", Opt.HEIGHT)),
-                        width=int(data.get("width", Opt.WIDTH)),
-                        return_type="pil")[0]
-
-        # ---- pick sharpest --------------------------------------------------
-        final = max(views, key=lambda im: np.var(cv2.Laplacian(np.array(im.convert("RGB")), cv2.CV_64F)))
-
-        # ---- respond --------------------------------------------------------
-        buf = io.BytesIO()
-        final.save(buf, "PNG"); buf.seek(0)
-        cache.add(key, buf.getvalue())
-        clear_gpu()
-        return send_file(buf, mimetype="image/png")
-
-    except torch.cuda.OutOfMemoryError:
-        clear_gpu()
-        return jsonify(error="GPU-OOM: reduce parameters"), 500
+        png_bytes = base64.b64decode(data["sketch"].split(",", 1)[1])
+        sketch = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
     except Exception as e:
-        clear_gpu()
-        log.exception("generate failed")
-        return jsonify(error=f"TripoSR processing failed: {e}"), 500
+        return jsonify(error=f"bad image data: {e}"), 400
 
-# ------------------------------------------------------------------#
+    prompt = data.get("prompt", "a clean 3-D asset")
+
+    # 1) edge map (convert to opaque RGB first!)
+    rgb = sketch.convert("RGB")
+    edge = edge_det(rgb)
+    del sketch, rgb
+
+    # 2) SD-ControlNet (63 steps, guidance 9.96)
+    with torch.no_grad():
+        concept = sd(
+            prompt,
+            image=edge,
+            num_inference_steps=63,
+            guidance_scale=9.96,
+            height=768,
+            width=768,
+        ).images[0]
+    clear_gpu()
+
+    # 3) remove backdrop → centre → scale
+    concept = remove_background(concept)
+    concept = resize_foreground(concept, 0.8)
+
+    # 4) TripoSR → latent codes
+    with torch.no_grad(), (
+        torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext()
+    ):
+        codes = tsr([concept], device=DEVICE)
+    clear_gpu()
+
+    # 5) render 4 views, pick sharpest
+    with torch.no_grad(), (
+        torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext()
+    ):
+        views = tsr.render(codes, n_views=4, height=512, width=512, return_type="pil")[0]
+    img = sharpest(views)
+
+    # 6) save to buffer & cache
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    buf.seek(0)
+
+    cache.put(key, buf)
+    clear_gpu()
+
+    return send_file(
+        buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True
+    )
+
+
+# ── main ----------------------------------------------------------------------
 if __name__ == "__main__":
-    log.info("🚀  Server running on http://0.0.0.0:5000")
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=5000)
