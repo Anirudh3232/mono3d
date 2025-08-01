@@ -1,6 +1,11 @@
+#!/usr/bin/env python3
+# service.py  — Mono3D backend
+# ----------------------------------------------------------------------
+# Generates a 2-D concept (SD-ControlNet) → removes backdrop →
+# TripoSR → renders                © 2025
+# ----------------------------------------------------------------------
 
-
-import io, os, sys, time, base64, gc, logging, atexit
+import io, os, sys, time, base64, gc, logging, atexit, types
 from functools import wraps
 from contextlib import nullcontext
 
@@ -16,7 +21,49 @@ from flask_cors import CORS
 TRIPOSR_PATH = os.path.join(os.path.dirname(__file__), "TripoSR-main")
 sys.path.insert(0, TRIPOSR_PATH)
 
-# ── disable CUDA-only torchmcubes so PyMCubes fallback works ----------
+# ---------------------------------------------------------------------
+#  Torchmcubes shim — **must run BEFORE the first TripoSR import**
+# ---------------------------------------------------------------------
+def setup_torchmcubes_fallback():
+    """
+    TripoSR imports `torchmcubes`. If the CUDA wheel isn’t present
+    (e.g. on Colab), we emulate it with pure-Python PyMCubes.
+    """
+    try:
+        import torchmcubes  # noqa: F401
+        logging.info("✅ Using native torchmcubes extension")
+        return
+    except ImportError:
+        logging.info("🔧 torchmcubes not found – falling back to PyMCubes")
+
+    try:
+        import PyMCubes, torch
+
+        # create a fake module
+        mcube_mod = types.ModuleType("torchmcubes")
+
+        def marching_cubes(vol: torch.Tensor, thresh: float = 0.0):
+            vol_np = vol.detach().cpu().numpy()
+            verts, faces = PyMCubes.marching_cubes(vol_np, thresh)
+            verts = torch.from_numpy(verts).to(vol.device)
+            faces = torch.from_numpy(faces.astype(np.int32)).to(vol.device)
+            return verts, faces
+
+        mcube_mod.marching_cubes = marching_cubes  # type: ignore
+        sys.modules["torchmcubes"] = mcube_mod
+        logging.info("✅ PyMCubes shim registered as torchmcubes")
+
+    except ImportError as e:
+        raise ImportError(
+            "Neither torchmcubes nor PyMCubes is available. "
+            "Add `pymcubes` to requirements or install torchmcubes."
+        ) from e
+
+
+setup_torchmcubes_fallback()
+
+# ---------------------------------------------------------------------
+# Disable CUDA-only torchmcubes kernels (just in case)
 os.environ["TSR_DISABLE_TORCHMCUBES"] = "1"
 
 # ── logging -----------------------------------------------------------
@@ -80,9 +127,8 @@ from diffusers import (
 from controlnet_aux import CannyDetector
 
 from tsr.system import TSR
-from tsr.utils import resize_foreground, remove_background  # foreground helpers
+from tsr.utils import resize_foreground, remove_background
 
-# Canny with slightly higher thresholds (thicker lines → better guidance)
 edge_det = CannyDetector(low_threshold=64, high_threshold=128)
 
 cnet = ControlNetModel.from_pretrained(
@@ -121,7 +167,6 @@ CORS(app)
 
 @app.get("/health")
 def health():
-    """Simple health-check endpoint."""
     return jsonify(
         status="ok",
         gpu_mb=(
@@ -132,9 +177,8 @@ def health():
     )
 
 
-# ── helper: choose sharpest image out of N views ----------------------
+# ── helper: sharpest of N views --------------------------------------
 def sharpest(img_list):
-    """Return the PIL image with highest Laplacian variance."""
     import cv2
 
     scores = [
@@ -154,14 +198,12 @@ def generate():
     if "sketch" not in data:
         return jsonify(error="missing 'sketch'"), 400
 
-    # ── LRU cache hit? -------------------------------------------------
     key = data["sketch"][:120] + data.get("prompt", "")
     if (buf := cache.get(key)) is not None:
         return send_file(
             buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True
         )
 
-    # ── decode PNG → PIL ---------------------------------------------
     try:
         png_bytes = base64.b64decode(data["sketch"].split(",", 1)[1])
         sketch = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
@@ -170,12 +212,10 @@ def generate():
 
     prompt = data.get("prompt", "a clean 3-D asset")
 
-    # 1) edge map (convert to opaque RGB first!)
-    rgb = sketch.convert("RGB")
-    edge = edge_det(rgb)
-    del sketch, rgb
+    # 1) Canny edges from opaque RGB
+    edge = edge_det(sketch.convert("RGB"))
 
-    # 2) SD-ControlNet (63 steps, guidance 9.96)
+    # 2) SD-ControlNet
     with torch.no_grad():
         concept = sd(
             prompt,
@@ -187,25 +227,25 @@ def generate():
         ).images[0]
     clear_gpu()
 
-    # 3) remove backdrop → centre → scale
+    # 3) clean + centre
     concept = remove_background(concept)
     concept = resize_foreground(concept, 0.8)
 
-    # 4) TripoSR → latent codes
+    # 4) TripoSR
     with torch.no_grad(), (
         torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext()
     ):
         codes = tsr([concept], device=DEVICE)
     clear_gpu()
 
-    # 5) render 4 views, pick sharpest
+    # 5) render & pick sharpest
     with torch.no_grad(), (
         torch.cuda.amp.autocast() if DEVICE == "cuda" else nullcontext()
     ):
         views = tsr.render(codes, n_views=4, height=512, width=512, return_type="pil")[0]
     img = sharpest(views)
 
-    # 6) save to buffer & cache
+    # 6) buffer → cache → send
     buf = io.BytesIO()
     img.save(buf, "PNG")
     buf.seek(0)
@@ -218,6 +258,5 @@ def generate():
     )
 
 
-# ── main ----------------------------------------------------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
