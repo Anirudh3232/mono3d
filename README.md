@@ -12,20 +12,11 @@ Mono3D is a web application that converts 2D sketches into 3D images using advan
 
 ## Quick Setup
 
-### Windows
-```bash
-# Run the setup script
-setup.bat
-```
 
-### Linux/Mac
-```bash
-# Make the script executable
-chmod +x setup.sh
 
-# Run the setup script
-./setup.sh
-```
+
+
+
 
 ## Manual Setup
 
