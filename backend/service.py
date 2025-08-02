@@ -161,10 +161,10 @@ def gpu_mem_mb() -> float:
 # Optimisation parameter helpers
 # ───────────────────────────────────────────────────────────────
 class OptimizedParameters:
-    DEFAULT_INFERENCE_STEPS = 100   # Increased for quality (from original 63)
+    DEFAULT_INFERENCE_STEPS = 50    # Reduced from 100 to pair with faster sampler
     DEFAULT_GUIDANCE_SCALE = 9.0    # Set to 9.0 per doc
-    DEFAULT_RENDER_RES = 1024       # Higher res for sharper renders
-    DEFAULT_EDGE_RES = 512          # Higher res edge map
+    DEFAULT_RENDER_RES = 512        # Reduced for speed
+    DEFAULT_EDGE_RES = 512          # Reduced for speed
     DEFAULT_UPSCALE_FACTOR = 2      # For hi-res latent upscale
 
     @classmethod
@@ -196,7 +196,7 @@ cache = LRU()
 # ───────────────────────────────────────────────────────────────
 logger.info("Starting model initialisation …"); _flush()
 
-from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, EulerAncestralDiscreteScheduler
+from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, DPMSolverMultistepScheduler  # Changed to faster DPM++ sampler
 from controlnet_aux import CannyDetector
 import rembg
 
@@ -231,7 +231,7 @@ sd = StableDiffusionControlNetPipeline.from_pretrained(
     controlnet=cnet,
     torch_dtype=DTYPE,
 ).to(DEV)
-sd.scheduler = EulerAncestralDiscreteScheduler.from_config(sd.scheduler.config)
+sd.scheduler = DPMSolverMultistepScheduler.from_config(sd.scheduler.config)
 try:
     sd.enable_xformers_memory_efficient_attention()
     logger.info("xformers attention enabled")
