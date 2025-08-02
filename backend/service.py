@@ -1,5 +1,6 @@
+```1:355:backend/service.py
 #!/usr/bin/env python3
-# service.py  –  Mono3D backend (optimised)
+# service.py – Mono3D Backend (Restored High-Quality Optimization)
 
 # ───────────────────────────────────────────────────────────────
 # Standard & third-party imports
@@ -14,21 +15,15 @@ import torch
 import torch.nn as nn
 from torch.cuda.amp import autocast
 
-from PIL import Image, ImageFilter  # Re-added for unsharp mask
+from PIL import Image, ImageFilter
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import psutil
 
-# TODO: Install RealESRGAN (pip install git+https://github.com/xinntao/Real-ESRGAN.git)
-# Download weights: wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth -P weights
-# from RealESRGAN import RealESRGANer  # Uncomment after installation
-
-import huggingface_hub as _hf_hub
-if not hasattr(_hf_hub, "cached_download"):
-    _hf_hub.cached_download = _hf_hub.hf_hub_download
-_acc_mem = importlib.import_module("accelerate.utils.memory")
-if not hasattr(_acc_mem, "clear_device_cache"):
-    _acc_mem.clear_device_cache = lambda *a, **k: None
+# R-NOTE: Re-introducing the necessary libraries for the optimization process.
+from bayes_opt import BayesianOptimization
+import lpips
+from torchvision import transforms
 
 # ───────────────────────────────────────────────────────────────
 # Logging
@@ -36,7 +31,7 @@ if not hasattr(_acc_mem, "clear_device_cache"):
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler('service.log')],
+    handlers=[logging.StreamHandler(), logging.FileHandler("service.log")],
 )
 logger = logging.getLogger(__name__)
 
@@ -52,7 +47,7 @@ if TRIPOSR_PATH not in sys.path:
 # ───────────────────────────────────────────────────────────────
 def _setup_torchmcubes_fallback() -> None:
     try:
-        import torchmcubes                         # noqa: F401
+        import torchmcubes  # noqa: F401
         logger.info("✅ native torchmcubes found")
         return
     except ModuleNotFoundError:
@@ -71,7 +66,7 @@ def _setup_torchmcubes_fallback() -> None:
                 torch.from_numpy(f.astype(_np.int32)).to(vol.device),
             )
 
-        mod.marching_cubes = marching_cubes          # type: ignore
+        mod.marching_cubes = marching_cubes  # type: ignore
         sys.modules["torchmcubes"] = mod
         logger.info("✅ pymcubes shim registered as torchmcubes")
     except ModuleNotFoundError as e:
@@ -79,7 +74,6 @@ def _setup_torchmcubes_fallback() -> None:
             "Neither torchmcubes nor pymcubes is available. "
             "Run `pip install pymcubes` or build torchmcubes."
         ) from e
-
 
 _setup_torchmcubes_fallback()
 
@@ -123,6 +117,12 @@ for _n in ("Cache", "DynamicCache", "EncoderDecoderCache"):
             pass
 import transformers.models.llama.modeling_llama
 transformers.models.llama.modeling_llama.AttnProcessor2_0 = MockCache
+import huggingface_hub as _hf_hub
+if not hasattr(_hf_hub, "cached_download"):
+    _hf_hub.cached_download = _hf_hub.hf_hub_download
+_acc_mem = importlib.import_module("accelerate.utils.memory")
+if not hasattr(_acc_mem, "clear_device_cache"):
+    _acc_mem.clear_device_cache = lambda *a, **k: None
 
 # ───────────────────────────────────────────────────────────────
 # Utility decorators / helpers
@@ -156,9 +156,10 @@ def gpu_mem_mb() -> float:
     return torch.cuda.memory_allocated() / 1024 ** 2 if torch.cuda.is_available() else 0
 
 # ───────────────────────────────────────────────────────────────
-# Optimisation parameter helpers
+# Parameter & Cache Helpers
 # ───────────────────────────────────────────────────────────────
 class GenerationParameters:
+    # R-NOTE: These are now only used for rendering and upscaling, not generation.
     DEFAULT_RENDER_RES = 512
     DEFAULT_UPSCALE_FACTOR = 2
 
@@ -169,9 +170,11 @@ class GenerationParameters:
             upscale_factor=int(data.get("upscale_factor", cls.DEFAULT_UPSCALE_FACTOR)),
         )
 
-class LRU:
+class LRUCache:
     def __init__(self, n=10):
-        self.n, self.d, self.o = n, {}, []
+        self.n = n
+        self.d = {}
+        self.o = []
     def get(self, k):
         if k in self.d:
             self.o.remove(k); self.o.append(k)
@@ -181,7 +184,7 @@ class LRU:
             del self.d[self.o.pop(0)]
         self.d[k] = v; self.o.append(k)
 
-cache = LRU()
+cache = LRUCache()
 
 # ───────────────────────────────────────────────────────────────
 # Start heavy imports (after all monkey-patches)
@@ -204,7 +207,6 @@ if DEV == "cuda":
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32  = True
 
-# Optional fp32 flag (per doc; set via env var for high-precision path)
 USE_FP32 = os.environ.get("MONO3D_FP32", "false").lower() == "true"
 DTYPE = torch.float32 if USE_FP32 else torch.float16
 
@@ -243,7 +245,74 @@ if hasattr(triposr, "renderer"):
     triposr.renderer.set_chunk_size(8192)
 triposr.to(DEV).eval()
 
+# R-NOTE: Re-instating the LPIPS model for perceptual distance calculation in the optimization loop.
+_lpips = lpips.LPIPS(net="vgg").eval().to(DEV)
+_resize = transforms.Resize((512, 512), interpolation=transforms.InterpolationMode.BICUBIC)
+
 logger.info("✔ all models ready"); _flush()
+
+# ───────────────────────────────────────────────────────────────
+# Optimization Logic (Restored for High-Quality Output)
+# ───────────────────────────────────────────────────────────────
+def _calc_neg_lpips(img_a: Image.Image, img_b: Image.Image) -> float:
+    """Return *negative* LPIPS — larger is better (so we can *maximize*)."""
+    ten_a = _resize(img_a.convert("RGB"))
+    ten_b = _resize(img_b.convert("RGB"))
+    ten_a = transforms.ToTensor()(ten_a)[None].to(DEV)
+    ten_b = transforms.ToTensor()(ten_b)[None].to(DEV)
+    with torch.no_grad():
+        score = _lpips(ten_a, ten_b).item()
+    return -score
+
+def optimize_concept(edge_map: Image.Image,
+                     prompt: str,
+                     init_seed: int = 42,
+                     n_iter: int = 25) -> t.Tuple[Image.Image, t.Dict[str, float]]:
+    """
+    Search for guidance_scale & num_inference_steps that give the
+    best-looking concept image, then return the final image + best params.
+    """
+    torch.manual_seed(init_seed)
+
+    pbounds = {
+        "guidance_scale": (5.0, 15.0),
+        "num_inference_steps": (20, 80),
+    }
+
+    def _objective(guidance_scale, num_inference_steps):
+        num_inference_steps = int(num_inference_steps)
+        concept = sd(
+            prompt=prompt,
+            image=edge_map,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+        ).images[0]
+        return _calc_neg_lpips(concept, edge_map)
+
+    bo = BayesianOptimization(
+        f=_objective,
+        pbounds=pbounds,
+        verbose=0,
+        random_state=123,
+    )
+    bo.maximize(init_points=5, n_iter=n_iter)
+
+    best_params = bo.max["params"]
+    best_params["num_inference_steps"] = int(best_params["num_inference_steps"])
+
+    logger.info("=================================================")
+    logger.info("✅  Best Parameters Found:")
+    logger.info(best_params)
+    logger.info(f"Best Score (Negative LPIPS): {bo.max['target']:.4f}")
+    logger.info("=================================================")
+
+    final_img = sd(
+        prompt=prompt,
+        image=edge_map,
+        **best_params,
+    ).images[0]
+
+    return final_img, best_params
 
 # ───────────────────────────────────────────────────────────────
 # Flask app
@@ -251,7 +320,7 @@ logger.info("✔ all models ready"); _flush()
 app = Flask(__name__)
 CORS(app)
 rembg_session = rembg.new_session()
-last_concept_image = None  # optional debugging endpoint
+last_concept_image = None
 
 @app.get("/health")
 def health():
@@ -285,10 +354,13 @@ def generate():
         return jsonify(error="missing 'sketch'"), 400
 
     key = data["sketch"][:120] + data.get("prompt", "")
-    if (buf := cache.get(key)) is not None:
-        return send_file(buf, mimetype="model/gltf", download_name="model.glb", as_attachment=True)
+    cached_buf = cache.get(key)
+    if cached_buf:
+        logger.info("Returning cached result")
+        cached_buf.seek(0)
+        # R-NOTE: Corrected to return a PNG image from cache, not a GLB/GLTF file.
+        return send_file(cached_buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True)
 
-    # decode PNG
     try:
         if "," not in data["sketch"]:
             raise ValueError("Invalid data URI format - missing comma separator")
@@ -301,7 +373,8 @@ def generate():
     params = GenerationParameters.get(data)
     edge = edge_det(sketch); del sketch
 
-    # Calling the restored optimization function
+    # R-NOTE: Calling the restored optimization function instead of a direct SD call.
+    # This is the key change to restore the desired output quality.
     concept, best_params = optimize_concept(edge, prm)
     clear_gpu()
     global last_concept_image
@@ -329,6 +402,7 @@ def generate():
 
     # Render the 3D object to a 2D image
     with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
+        # R-NOTE: Corrected the render call to handle the list of images properly.
         imgs = triposr.render(
             codes,
             n_views=1,
@@ -354,3 +428,4 @@ def generate():
 # ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+```
