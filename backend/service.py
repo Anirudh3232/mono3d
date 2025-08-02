@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# service.py – Mono3D Backend (Restored High-Quality Optimization)
+# service.py – Mono3D Backend (Optimized for Speed and Quality)
 
 # ───────────────────────────────────────────────────────────────
 # Standard & third-party imports
@@ -19,10 +19,9 @@ from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import psutil
 
-# R-NOTE: Re-introducing the necessary libraries for the optimization process.
-from bayes_opt import BayesianOptimization
-import lpips
-from torchvision import transforms
+# TODO: Install RealESRGAN (pip install git+https://github.com/xinntao/Real-ESRGAN.git)
+# Download weights: wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth -P weights
+# from RealESRGAN import RealESRGANer  # Uncomment after installation
 
 # ───────────────────────────────────────────────────────────────
 # Logging
@@ -158,13 +157,16 @@ def gpu_mem_mb() -> float:
 # Parameter & Cache Helpers
 # ───────────────────────────────────────────────────────────────
 class GenerationParameters:
-    # R-NOTE: These are now only used for rendering and upscaling, not generation.
+    DEFAULT_INFERENCE_STEPS = 30   # Balanced for speed and quality
+    DEFAULT_GUIDANCE_SCALE = 7.5   # Moderate guidance for coherent results
     DEFAULT_RENDER_RES = 512
     DEFAULT_UPSCALE_FACTOR = 2
 
     @classmethod
     def get(cls, data):
         return dict(
+            num_inference_steps=int(data.get("num_inference_steps", cls.DEFAULT_INFERENCE_STEPS)),
+            guidance_scale=float(data.get("guidance_scale", cls.DEFAULT_GUIDANCE_SCALE)),
             render_resolution=int(data.get("render_resolution", cls.DEFAULT_RENDER_RES)),
             upscale_factor=int(data.get("upscale_factor", cls.DEFAULT_UPSCALE_FACTOR)),
         )
@@ -244,74 +246,7 @@ if hasattr(triposr, "renderer"):
     triposr.renderer.set_chunk_size(8192)
 triposr.to(DEV).eval()
 
-# R-NOTE: Re-instating the LPIPS model for perceptual distance calculation in the optimization loop.
-_lpips = lpips.LPIPS(net="vgg").eval().to(DEV)
-_resize = transforms.Resize((512, 512), interpolation=transforms.InterpolationMode.BICUBIC)
-
 logger.info("✔ all models ready"); _flush()
-
-# ───────────────────────────────────────────────────────────────
-# Optimization Logic (Restored for High-Quality Output)
-# ───────────────────────────────────────────────────────────────
-def _calc_neg_lpips(img_a: Image.Image, img_b: Image.Image) -> float:
-    """Return *negative* LPIPS — larger is better (so we can *maximize*)."""
-    ten_a = _resize(img_a.convert("RGB"))
-    ten_b = _resize(img_b.convert("RGB"))
-    ten_a = transforms.ToTensor()(ten_a)[None].to(DEV)
-    ten_b = transforms.ToTensor()(ten_b)[None].to(DEV)
-    with torch.no_grad():
-        score = _lpips(ten_a, ten_b).item()
-    return -score
-
-def optimize_concept(edge_map: Image.Image,
-                     prompt: str,
-                     init_seed: int = 42,
-                     n_iter: int = 25) -> t.Tuple[Image.Image, t.Dict[str, float]]:
-    """
-    Search for guidance_scale & num_inference_steps that give the
-    best-looking concept image, then return the final image + best params.
-    """
-    torch.manual_seed(init_seed)
-
-    pbounds = {
-        "guidance_scale": (5.0, 15.0),
-        "num_inference_steps": (20, 80),
-    }
-
-    def _objective(guidance_scale, num_inference_steps):
-        num_inference_steps = int(num_inference_steps)
-        concept = sd(
-            prompt=prompt,
-            image=edge_map,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-        ).images[0]
-        return _calc_neg_lpips(concept, edge_map)
-
-    bo = BayesianOptimization(
-        f=_objective,
-        pbounds=pbounds,
-        verbose=0,
-        random_state=123,
-    )
-    bo.maximize(init_points=5, n_iter=n_iter)
-
-    best_params = bo.max["params"]
-    best_params["num_inference_steps"] = int(best_params["num_inference_steps"])
-
-    logger.info("=================================================")
-    logger.info("✅  Best Parameters Found:")
-    logger.info(best_params)
-    logger.info(f"Best Score (Negative LPIPS): {bo.max['target']:.4f}")
-    logger.info("=================================================")
-
-    final_img = sd(
-        prompt=prompt,
-        image=edge_map,
-        **best_params,
-    ).images[0]
-
-    return final_img, best_params
 
 # ───────────────────────────────────────────────────────────────
 # Flask app
@@ -319,7 +254,7 @@ def optimize_concept(edge_map: Image.Image,
 app = Flask(__name__)
 CORS(app)
 rembg_session = rembg.new_session()
-last_concept_image = None
+last_concept_image = None  # optional debugging endpoint
 
 @app.get("/health")
 def health():
@@ -353,13 +288,10 @@ def generate():
         return jsonify(error="missing 'sketch'"), 400
 
     key = data["sketch"][:120] + data.get("prompt", "")
-    cached_buf = cache.get(key)
-    if cached_buf:
-        logger.info("Returning cached result")
-        cached_buf.seek(0)
-        # R-NOTE: Corrected to return a PNG image from cache, not a GLB/GLTF file.
-        return send_file(cached_buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True)
+    if (buf := cache.get(key)) is not None:
+        return send_file(buf, mimetype="image/png", download_name="3d.png", as_attachment=True)
 
+    # decode PNG
     try:
         if "," not in data["sketch"]:
             raise ValueError("Invalid data URI format - missing comma separator")
@@ -368,18 +300,26 @@ def generate():
     except (base64.binascii.Error, ValueError, OSError) as e:
         return jsonify(error=f"Invalid image data: {str(e)}"), 400
 
-    prm = data.get("prompt", "a clean 3-D asset, beautiful, high quality")
+    prm = data.get("prompt", "a clean 3-D asset")
     params = GenerationParameters.get(data)
+
+    # edge map
     edge = edge_det(sketch); del sketch
 
-    # R-NOTE: Calling the restored optimization function instead of a direct SD call.
-    # This is the key change to restore the desired output quality.
-    concept, best_params = optimize_concept(edge, prm)
+    # Stable Diffusion
+    with torch.no_grad():
+        concept = sd(
+            prompt=prm,
+            image=edge,
+            num_inference_steps=params["num_inference_steps"],
+            guidance_scale=params["guidance_scale"],
+        ).images[0]
+
     clear_gpu()
     global last_concept_image
     last_concept_image = concept.copy()
 
-    # Background removal & resize
+    # background removal & resize
     try:
         proc = remove_background(concept, rembg_session)
         proc = resize_foreground(proc, 0.85)
@@ -392,37 +332,37 @@ def generate():
 
     # Hi-res latent upscale pass
     upscale_size = (proc.size[0] * params["upscale_factor"], proc.size[1] * params["upscale_factor"])
-    proc = proc.resize(upscale_size, Image.LANCZOS)
+    proc = proc.resize(upscale_size, Image.LANCZOS)  # Basic resize; TODO: Integrate better latent upscale if needed
 
-    # TripoSR scene code generation
-    with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
+    # TripoSR codes
+    with torch.no_grad(), (autocast() if DEV == "cuda" else nullcontext()):
         codes = triposr([proc], device=DEV)
     clear_gpu()
 
-    # Render the 3D object to a 2D image
-    with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
-        # R-NOTE: Corrected the render call to handle the list of images properly.
+    # render
+    with torch.no_grad(), (autocast() if DEV == "cuda" else nullcontext()):
         imgs = triposr.render(
-            codes,
-            n_views=1,
+            codes, n_views=1,
             height=params["render_resolution"],
             width=params["render_resolution"],
             return_type="pil",
         )[0]
+
     img = imgs[0]
 
-    # Apply final polish with an unsharp mask
-    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
+    # Apply RealESRGAN + unsharp mask (TODO: Uncomment after loading upscaler)
+    # img_tensor = torch.from_numpy(np.array(img)).permute(2, 0, 1).unsqueeze(0).float() / 255.0
+    # upscaled = upscaler.enhance(img_tensor)  # TODO: Adjust for RealESRGAN API
+    # img = Image.fromarray((upscaled.squeeze(0).permute(1, 2, 0).numpy() * 255).astype(np.uint8))
+    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))  # Unsharp mask applied
 
-    # Save final image to buffer
     buf = io.BytesIO()
-    img.save(buf, "PNG", compress_level=4)
+    img.save(buf, "PNG", compress_level=4)  # PNG compress_level=4 per doc
     buf.seek(0)
-    
-    # Cache the result and send
     cache.put(key, buf)
     clear_gpu()
-    return send_file(buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True)
+
+    return send_file(buf, mimetype="image/png", download_name="3d.png", as_attachment=True)
 
 # ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
