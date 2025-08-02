@@ -37,6 +37,9 @@ opencv-python>=4.5.0,<5.0.0  # Already likely from controlnet-aux, but explicit
 lpips>=0.1.4,<1.0.0
 bayesian-optimization>=1.4.0,<2.0.0
 
+# For Token Merging (ToMe)
+tomesd>=0.1.3,<1.0.0
+
 #  API server & monitoring 
 Flask==3.0.3
 Flask-Cors==4.0.1
