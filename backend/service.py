@@ -27,6 +27,9 @@ from bayes_opt import BayesianOptimization
 import lpips
 from torchvision import transforms
 
+import tomesd  # For Token Merging
+from diffusers import DPMSolverMultistepScheduler  # Faster sampler
+
 # ───────────────────────────────────────────────────────────────
 # Logging
 # ───────────────────────────────────────────────────────────────
@@ -73,7 +76,7 @@ def _setup_torchmcubes_fallback() -> None:
     except ModuleNotFoundError as e:
         raise ImportError(
             "Neither torchmcubes nor pymcubes is available. "
-            "Run `pip install pymcubes` or build torchmcubes."
+            "Run pip install pymcubes or build torchmcubes."
         ) from e
 
 
@@ -161,12 +164,12 @@ def gpu_mem_mb() -> float:
 # Optimisation parameter helpers
 # ───────────────────────────────────────────────────────────────
 class OptimizedParameters:
-    DEFAULT_INFERENCE_STEPS = 100   # Increased for quality (from original 63)
+    DEFAULT_INFERENCE_STEPS = 30    # Reduced for speed (quality via sampler)
     DEFAULT_GUIDANCE_SCALE = 9.0    # Set to 9.0 per doc
-    DEFAULT_RENDER_RES = 1024       # Higher res for sharper renders
+    DEFAULT_RENDER_RES = 768        # Reduced for memory/speed (per user preference)
     DEFAULT_EDGE_RES = 512          # Higher res edge map
     DEFAULT_UPSCALE_FACTOR = 2      # For hi-res latent upscale
-    DEFAULT_PROMPT = "a detailed red house, realistic, high quality, with windows and door"  # Enhanced for color/detail
+    DEFAULT_TOME_RATIO = 0.3        # Token merging ratio (0-1)
 
     @classmethod
     def get(cls, data):
@@ -176,7 +179,7 @@ class OptimizedParameters:
             render_resolution=int(data.get("render_resolution", cls.DEFAULT_RENDER_RES)),
             edge_resolution=int(data.get("edge_resolution", cls.DEFAULT_EDGE_RES)),
             upscale_factor=int(data.get("upscale_factor", cls.DEFAULT_UPSCALE_FACTOR)),
-            prompt=str(data.get("prompt", cls.DEFAULT_PROMPT)),
+            tome_ratio=float(data.get("tome_ratio", cls.DEFAULT_TOME_RATIO)),
         )
 
 class LRU:
@@ -221,9 +224,9 @@ DTYPE = torch.float32 if USE_FP32 else torch.float16
 # ───────── edge detector
 edge_det = CannyDetector()
 
-# ───────── ControlNet
+# ───────── ControlNet (Use lighter ControlNet-XS for Canny if available)
 cnet = ControlNetModel.from_pretrained(
-    "lllyasviel/sd-controlnet-canny",
+    "TheMistoAI/MistoLine",  # Lightweight alternative (ControlNet-XS like)
     torch_dtype=DTYPE,
 ).to(DEV)
 
@@ -232,9 +235,8 @@ sd = StableDiffusionControlNetPipeline.from_pretrained(
     "runwayml/stable-diffusion-v1-5",
     controlnet=cnet,
     torch_dtype=DTYPE,
-    safety_checker=None,  # Disable NSFW filter for unrestricted generation
 ).to(DEV)
-sd.scheduler = EulerAncestralDiscreteScheduler.from_config(sd.scheduler.config)
+sd.scheduler = DPMSolverMultistepScheduler.from_config(sd.scheduler.config)  # Faster sampler
 try:
     sd.enable_xformers_memory_efficient_attention()
     logger.info("xformers attention enabled")
@@ -244,18 +246,21 @@ sd.enable_model_cpu_offload()
 sd.enable_attention_slicing()
 sd.enable_vae_slicing()
 
+# Apply Token Merging (ToMe) for memory/speed
+tomesd.apply_patch(sd, ratio=OptimizedParameters.DEFAULT_TOME_RATIO)
+
+# Compile model for speed if PyTorch >=2.0
+if torch.__version__ >= "2.0":
+    sd.unet = torch.compile(sd.unet, mode="reduce-overhead")
+
 # ───────── TripoSR
 triposr = TSR.from_pretrained(
     "stabilityai/TripoSR",
     config_name="config.yaml",
     weight_name="model.ckpt",
-)
+).to(DTYPE).to(DEV).eval()  # Ensure FP16 for TripoSR
 if hasattr(triposr, "renderer"):
     triposr.renderer.set_chunk_size(8192)
-triposr.to(DEV).eval()
-
-# TODO: Load RealESRGAN for upscale (after installing package and weights)
-# upscaler = RealESRGANer(scale=4, model_path='weights/RealESRGAN_x4plus.pth', device=DEV)
 
 logger.info("✔ all models ready"); _flush()
 
@@ -298,7 +303,6 @@ def optimize_concept(edge_map: Image.Image,
             image               = edge_map,
             num_inference_steps = num_inference_steps,
             guidance_scale      = guidance_scale,
-            negative_prompt     = "blurry, low quality, gray, monochrome, deformed, ugly",  # Added for better quality
         ).images[0]
 
         return _calc_neg_lpips(concept, edge_map)
@@ -325,7 +329,6 @@ def optimize_concept(edge_map: Image.Image,
     final_img = sd(
         prompt              = prompt,
         image               = edge_map,
-        negative_prompt     = "blurry, low quality, gray, monochrome, deformed, ugly",  # Added for better quality
         **best_params,
     ).images[0]
 
@@ -381,13 +384,13 @@ def generate():
     except Exception as e:
         return jsonify(error=f"bad image data: {e}"), 400
 
+    prm = data.get("prompt", "a clean 3-D asset")
     params = OptimizedParameters.get(data)
-    prm = params["prompt"]  # Use enhanced default or user-provided
 
     # edge map (higher resolution per doc)
     edge = edge_det(sketch.resize((params["edge_resolution"], params["edge_resolution"]))); del sketch
 
-    # Stable Diffusion with optimization
+    # Stable Diffusion
     with torch.no_grad():
         concept, best = optimize_concept(edge, prm)
 
@@ -415,7 +418,7 @@ def generate():
         codes = triposr([proc], device=DEV)
     clear_gpu()
 
-    # render with color enhancement
+    # render
     with torch.no_grad(), (autocast() if DEV == "cuda" else nullcontext()):
         imgs = triposr.render(
             codes, n_views=1,
