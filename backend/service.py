@@ -44,7 +44,8 @@ logger = logging.getLogger(__name__)
 # Add TripoSR to path
 # ───────────────────────────────────────────────────────────────
 TRIPOSR_PATH = os.path.join(os.path.dirname(__file__), "TripoSR-main")
-sys.path.insert(0, TRIPOSR_PATH)
+if TRIPOSR_PATH not in sys.path:
+    sys.path.insert(0, TRIPOSR_PATH)
 
 # ───────────────────────────────────────────────────────────────
 # torchmcubes fallback  →  pymcubes
@@ -158,16 +159,12 @@ def gpu_mem_mb() -> float:
 # Optimisation parameter helpers
 # ───────────────────────────────────────────────────────────────
 class GenerationParameters:
-    DEFAULT_INFERENCE_STEPS = 30
-    DEFAULT_GUIDANCE_SCALE = 7.5
     DEFAULT_RENDER_RES = 512
     DEFAULT_UPSCALE_FACTOR = 2
 
     @classmethod
     def get(cls, data):
         return dict(
-            num_inference_steps=int(data.get("num_inference_steps", cls.DEFAULT_INFERENCE_STEPS)),
-            guidance_scale=float(data.get("guidance_scale", cls.DEFAULT_GUIDANCE_SCALE)),
             render_resolution=int(data.get("render_resolution", cls.DEFAULT_RENDER_RES)),
             upscale_factor=int(data.get("upscale_factor", cls.DEFAULT_UPSCALE_FACTOR)),
         )
@@ -298,26 +295,17 @@ def generate():
     except Exception as e:
         return jsonify(error=f"bad image data: {e}"), 400
 
-    prm = data.get("prompt", "a clean 3-D asset")
+    prm = data.get("prompt", "a clean 3-D asset, beautiful, high quality")
     params = GenerationParameters.get(data)
-
-    # edge map (higher resolution per doc)
     edge = edge_det(sketch); del sketch
 
-    # Stable Diffusion
-    with torch.no_grad():
-        concept = sd(
-            prompt=prm,
-            image=edge,
-            num_inference_steps=params["num_inference_steps"],
-            guidance_scale=params["guidance_scale"],
-        ).images[0]
-
+    # Calling the restored optimization function
+    concept, best_params = optimize_concept(edge, prm)
     clear_gpu()
     global last_concept_image
     last_concept_image = concept.copy()
 
-    # Background removal & resize (restored for quality)
+    # Background removal & resize
     try:
         proc = remove_background(concept, rembg_session)
         proc = resize_foreground(proc, 0.85)
@@ -328,15 +316,16 @@ def generate():
         logger.warning("rembg failed: %s – using original", e)
         proc = concept
 
-    # Hi-res latent upscale pass (resize concept before TripoSR)
+    # Hi-res latent upscale pass
     upscale_size = (proc.size[0] * params["upscale_factor"], proc.size[1] * params["upscale_factor"])
     proc = proc.resize(upscale_size, Image.LANCZOS)
 
-    # TripoSR codes
+    # TripoSR scene code generation
     with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
         codes = triposr([proc], device=DEV)
+    clear_gpu()
 
-    # render
+    # Render the 3D object to a 2D image
     with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
         imgs = triposr.render(
             codes,
@@ -345,19 +334,19 @@ def generate():
             width=params["render_resolution"],
             return_type="pil",
         )[0]
-
-    img = imgs[0]
+    img = imgs
 
     # Apply final polish with an unsharp mask
     img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
 
+    # Save final image to buffer
     buf = io.BytesIO()
     img.save(buf, "PNG", compress_level=4)
     buf.seek(0)
     
+    # Cache the result and send
     cache.put(key, buf)
     clear_gpu()
-
     return send_file(buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True)
 
 # ───────────────────────────────────────────────────────────────
