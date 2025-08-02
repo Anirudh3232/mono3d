@@ -23,9 +23,12 @@ import psutil
 # Download weights: wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth -P weights
 # from RealESRGAN import RealESRGANer  # Uncomment after installation
 
-from bayes_opt import BayesianOptimization
-import lpips
-from torchvision import transforms
+import huggingface_hub as _hf_hub
+if not hasattr(_hf_hub, "cached_download"):
+    _hf_hub.cached_download = _hf_hub.hf_hub_download
+_acc_mem = importlib.import_module("accelerate.utils.memory")
+if not hasattr(_acc_mem, "clear_device_cache"):
+    _acc_mem.clear_device_cache = lambda *a, **k: None
 
 # ───────────────────────────────────────────────────────────────
 # Logging
@@ -119,12 +122,6 @@ for _n in ("Cache", "DynamicCache", "EncoderDecoderCache"):
             pass
 import transformers.models.llama.modeling_llama
 transformers.models.llama.modeling_llama.AttnProcessor2_0 = MockCache
-import huggingface_hub as _hf_hub
-if not hasattr(_hf_hub, "cached_download"):
-    _hf_hub.cached_download = _hf_hub.hf_hub_download
-_acc_mem = importlib.import_module("accelerate.utils.memory")
-if not hasattr(_acc_mem, "clear_device_cache"):
-    _acc_mem.clear_device_cache = lambda *a, **k: None
 
 # ───────────────────────────────────────────────────────────────
 # Utility decorators / helpers
@@ -250,76 +247,6 @@ if hasattr(triposr, "renderer"):
 triposr.to(DEV).eval()
 
 logger.info("✔ all models ready"); _flush()
-
-_lpips = lpips.LPIPS(net="vgg").eval().to(DEV)   # perceptual-distance metric
-_resize = transforms.Resize((512, 512), interpolation=Image.BICUBIC)
-
-def _calc_neg_lpips(img_a: Image.Image, img_b: Image.Image) -> float:
-    """Return *negative* LPIPS — larger is better (so we can *maximize*)."""
-    ten_a = _resize(img_a).convert("RGB")
-    ten_b = _resize(img_b).convert("RGB")
-    ten_a = transforms.ToTensor()(ten_a)[None].to(DEV)
-    ten_b = transforms.ToTensor()(ten_b)[None].to(DEV)
-    with torch.no_grad():
-        score = _lpips(ten_a, ten_b).item()
-    return -score                       # maximise similarity  ⇒  maximise (−LPIPS)
-
-# ---------------------------------------------------------------------
-def optimize_concept(edge_map: Image.Image,
-                     prompt: str,
-                     init_seed: int = 42,
-                     n_iter: int = 25) -> t.Tuple[Image.Image, t.Dict[str, float]]:
-    """
-    Search for guidance_scale & num_inference_steps that give the
-    closest-looking concept image to the original sketch (edge_map)
-    under LPIPS distance – then return the final image + best params.
-    """
-    torch.manual_seed(init_seed)
-
-    # search space
-    pbounds = {
-        "guidance_scale": (5.0, 15.0),
-        "num_inference_steps": (20, 80),
-    }
-
-    def _objective(guidance_scale, num_inference_steps):
-        num_inference_steps = int(num_inference_steps)
-
-        concept = sd(
-            prompt              = prompt,
-            image               = edge_map,
-            num_inference_steps = num_inference_steps,
-            guidance_scale      = guidance_scale,
-        ).images[0]
-
-        return _calc_neg_lpips(concept, edge_map)
-
-    # run Bayesian Optimisation
-    bo = BayesianOptimization(
-        f       = _objective,
-        pbounds = pbounds,
-        verbose = 0,
-        random_state = 123,
-    )
-    bo.maximize(init_points=5, n_iter=n_iter)
-
-    best_params = bo.max["params"]
-    best_params["num_inference_steps"] = int(best_params["num_inference_steps"])
-
-    print("=================================================")
-    print("✅  Best Parameters Found:")
-    print(best_params)
-    print("Best Score (Negative LPIPS):", bo.max["target"])
-    print("=================================================")
-
-    # final hi-res image with the winning hyper-parameters
-    final_img = sd(
-        prompt              = prompt,
-        image               = edge_map,
-        **best_params,
-    ).images[0]
-
-    return final_img, best_params
 
 # ───────────────────────────────────────────────────────────────
 # Flask app
