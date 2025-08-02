@@ -27,9 +27,6 @@ from bayes_opt import BayesianOptimization
 import lpips
 from torchvision import transforms
 
-import tomesd  # For Token Merging
-from diffusers import DPMSolverMultistepScheduler  # Faster sampler
-
 # ───────────────────────────────────────────────────────────────
 # Logging
 # ───────────────────────────────────────────────────────────────
@@ -76,7 +73,7 @@ def _setup_torchmcubes_fallback() -> None:
     except ModuleNotFoundError as e:
         raise ImportError(
             "Neither torchmcubes nor pymcubes is available. "
-            "Run pip install pymcubes or build torchmcubes."
+            "Run `pip install pymcubes` or build torchmcubes."
         ) from e
 
 
@@ -164,12 +161,11 @@ def gpu_mem_mb() -> float:
 # Optimisation parameter helpers
 # ───────────────────────────────────────────────────────────────
 class OptimizedParameters:
-    DEFAULT_INFERENCE_STEPS = 30    # Reduced for speed (quality via sampler)
+    DEFAULT_INFERENCE_STEPS = 100   # Increased for quality (from original 63)
     DEFAULT_GUIDANCE_SCALE = 9.0    # Set to 9.0 per doc
-    DEFAULT_RENDER_RES = 768        # Reduced for memory/speed (per user preference)
+    DEFAULT_RENDER_RES = 1024       # Higher res for sharper renders
     DEFAULT_EDGE_RES = 512          # Higher res edge map
     DEFAULT_UPSCALE_FACTOR = 2      # For hi-res latent upscale
-    DEFAULT_TOME_RATIO = 0.3        # Token merging ratio (0-1)
 
     @classmethod
     def get(cls, data):
@@ -179,7 +175,6 @@ class OptimizedParameters:
             render_resolution=int(data.get("render_resolution", cls.DEFAULT_RENDER_RES)),
             edge_resolution=int(data.get("edge_resolution", cls.DEFAULT_EDGE_RES)),
             upscale_factor=int(data.get("upscale_factor", cls.DEFAULT_UPSCALE_FACTOR)),
-            tome_ratio=float(data.get("tome_ratio", cls.DEFAULT_TOME_RATIO)),
         )
 
 class LRU:
@@ -224,9 +219,9 @@ DTYPE = torch.float32 if USE_FP32 else torch.float16
 # ───────── edge detector
 edge_det = CannyDetector()
 
-# ───────── ControlNet (Use lighter ControlNet-XS for Canny if available)
+# ───────── ControlNet
 cnet = ControlNetModel.from_pretrained(
-    "TheMistoAI/MistoLine",  # Lightweight alternative (ControlNet-XS like)
+    "lllyasviel/sd-controlnet-canny",
     torch_dtype=DTYPE,
 ).to(DEV)
 
@@ -236,7 +231,7 @@ sd = StableDiffusionControlNetPipeline.from_pretrained(
     controlnet=cnet,
     torch_dtype=DTYPE,
 ).to(DEV)
-sd.scheduler = DPMSolverMultistepScheduler.from_config(sd.scheduler.config)  # Faster sampler
+sd.scheduler = EulerAncestralDiscreteScheduler.from_config(sd.scheduler.config)
 try:
     sd.enable_xformers_memory_efficient_attention()
     logger.info("xformers attention enabled")
@@ -246,21 +241,15 @@ sd.enable_model_cpu_offload()
 sd.enable_attention_slicing()
 sd.enable_vae_slicing()
 
-# Apply Token Merging (ToMe) for memory/speed
-tomesd.apply_patch(sd, ratio=OptimizedParameters.DEFAULT_TOME_RATIO)
-
-# Compile model for speed if PyTorch >=2.0
-if torch.__version__ >= "2.0":
-    sd.unet = torch.compile(sd.unet, mode="reduce-overhead")
-
 # ───────── TripoSR
 triposr = TSR.from_pretrained(
     "stabilityai/TripoSR",
     config_name="config.yaml",
     weight_name="model.ckpt",
-).to(DTYPE).to(DEV).eval()  # Ensure FP16 for TripoSR
+)
 if hasattr(triposr, "renderer"):
     triposr.renderer.set_chunk_size(8192)
+triposr.to(DEV).eval()
 
 logger.info("✔ all models ready"); _flush()
 
