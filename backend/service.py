@@ -14,10 +14,18 @@ import torch
 import torch.nn as nn
 from torch.cuda.amp import autocast
 
-from PIL import Image
+from PIL import Image, ImageFilter  # Added for unsharp mask
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import psutil
+
+# TODO: Install RealESRGAN (pip install git+https://github.com/xinntao/Real-ESRGAN.git)
+# Download weights: wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth -P weights
+# from RealESRGAN import RealESRGANer  # Uncomment after installation
+
+from bayes_opt import BayesianOptimization
+import lpips
+from torchvision import transforms
 
 # ───────────────────────────────────────────────────────────────
 # Logging
@@ -153,9 +161,11 @@ def gpu_mem_mb() -> float:
 # Optimisation parameter helpers
 # ───────────────────────────────────────────────────────────────
 class OptimizedParameters:
-    DEFAULT_INFERENCE_STEPS = 30   # was 63
-    DEFAULT_GUIDANCE_SCALE = 7.5   # was 9.96
-    DEFAULT_RENDER_RES   = 512
+    DEFAULT_INFERENCE_STEPS = 100   # Increased for quality (from original 63)
+    DEFAULT_GUIDANCE_SCALE = 9.0    # Set to 9.0 per doc
+    DEFAULT_RENDER_RES = 1024       # Higher res for sharper renders
+    DEFAULT_EDGE_RES = 512          # Higher res edge map
+    DEFAULT_UPSCALE_FACTOR = 2      # For hi-res latent upscale
 
     @classmethod
     def get(cls, data):
@@ -163,6 +173,8 @@ class OptimizedParameters:
             num_inference_steps=int(data.get("num_inference_steps", cls.DEFAULT_INFERENCE_STEPS)),
             guidance_scale=float(data.get("guidance_scale", cls.DEFAULT_GUIDANCE_SCALE)),
             render_resolution=int(data.get("render_resolution", cls.DEFAULT_RENDER_RES)),
+            edge_resolution=int(data.get("edge_resolution", cls.DEFAULT_EDGE_RES)),
+            upscale_factor=int(data.get("upscale_factor", cls.DEFAULT_UPSCALE_FACTOR)),
         )
 
 class LRU:
@@ -200,20 +212,24 @@ if DEV == "cuda":
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32  = True
 
+# Optional fp32 flag (per doc; set via env var for high-precision path)
+USE_FP32 = os.environ.get("MONO3D_FP32", "false").lower() == "true"
+DTYPE = torch.float32 if USE_FP32 else torch.float16
+
 # ───────── edge detector
 edge_det = CannyDetector()
 
 # ───────── ControlNet
 cnet = ControlNetModel.from_pretrained(
     "lllyasviel/sd-controlnet-canny",
-    torch_dtype=torch.float16,
+    torch_dtype=DTYPE,
 ).to(DEV)
 
 # ───────── Stable Diffusion
 sd = StableDiffusionControlNetPipeline.from_pretrained(
     "runwayml/stable-diffusion-v1-5",
     controlnet=cnet,
-    torch_dtype=torch.float16,
+    torch_dtype=DTYPE,
 ).to(DEV)
 sd.scheduler = EulerAncestralDiscreteScheduler.from_config(sd.scheduler.config)
 try:
@@ -235,7 +251,80 @@ if hasattr(triposr, "renderer"):
     triposr.renderer.set_chunk_size(8192)
 triposr.to(DEV).eval()
 
+# TODO: Load RealESRGAN for upscale (after installing package and weights)
+# upscaler = RealESRGANer(scale=4, model_path='weights/RealESRGAN_x4plus.pth', device=DEV)
+
 logger.info("✔ all models ready"); _flush()
+
+_lpips = lpips.LPIPS(net="vgg").eval().to(DEV)   # perceptual-distance metric
+_resize = transforms.Resize((512, 512), interpolation=Image.BICUBIC)
+
+def _calc_neg_lpips(img_a: Image.Image, img_b: Image.Image) -> float:
+    """Return *negative* LPIPS — larger is better (so we can *maximize*)."""
+    ten_a = _resize(img_a).convert("RGB")
+    ten_b = _resize(img_b).convert("RGB")
+    ten_a = transforms.ToTensor()(ten_a)[None].to(DEV)
+    ten_b = transforms.ToTensor()(ten_b)[None].to(DEV)
+    with torch.no_grad():
+        score = _lpips(ten_a, ten_b).item()
+    return -score                       # maximise similarity  ⇒  maximise (−LPIPS)
+
+# ---------------------------------------------------------------------
+def optimize_concept(edge_map: Image.Image,
+                     prompt: str,
+                     init_seed: int = 42,
+                     n_iter: int = 25) -> Tuple[Image.Image, Dict[str, float]]:
+    """
+    Search for guidance_scale & num_inference_steps that give the
+    closest-looking concept image to the original sketch (edge_map)
+    under LPIPS distance – then return the final image + best params.
+    """
+    torch.manual_seed(init_seed)
+
+    # search space
+    pbounds = {
+        "guidance_scale": (5.0, 15.0),
+        "num_inference_steps": (20, 80),
+    }
+
+    def _objective(guidance_scale, num_inference_steps):
+        num_inference_steps = int(num_inference_steps)
+
+        concept = sd(
+            prompt              = prompt,
+            image               = edge_map,
+            num_inference_steps = num_inference_steps,
+            guidance_scale      = guidance_scale,
+        ).images[0]
+
+        return _calc_neg_lpips(concept, edge_map)
+
+    # run Bayesian Optimisation
+    bo = BayesianOptimization(
+        f       = _objective,
+        pbounds = pbounds,
+        verbose = 0,
+        random_state = 123,
+    )
+    bo.maximize(init_points=5, n_iter=n_iter)
+
+    best_params = bo.max["params"]
+    best_params["num_inference_steps"] = int(best_params["num_inference_steps"])
+
+    print("=================================================")
+    print("✅  Best Parameters Found:")
+    print(best_params)
+    print("Best Score (Negative LPIPS):", bo.max["target"])
+    print("=================================================")
+
+    # final hi-res image with the winning hyper-parameters
+    final_img = sd(
+        prompt              = prompt,
+        image               = edge_map,
+        **best_params,
+    ).images[0]
+
+    return final_img, best_params
 
 # ───────────────────────────────────────────────────────────────
 # Flask app
@@ -290,16 +379,13 @@ def generate():
     prm = data.get("prompt", "a clean 3-D asset")
     params = OptimizedParameters.get(data)
 
-    # edge map
-    edge = edge_det(sketch); del sketch
+    # edge map (higher resolution per doc)
+    edge = edge_det(sketch.resize((params["edge_resolution"], params["edge_resolution"]))); del sketch
 
     # Stable Diffusion
     with torch.no_grad():
-        concept = sd(
-            prm, image=edge,
-            num_inference_steps=params["num_inference_steps"],
-            guidance_scale=params["guidance_scale"],
-        ).images[0]
+        concept, best = optimize_concept(edge, prm)
+
     clear_gpu()
     global last_concept_image
     last_concept_image = concept.copy()
@@ -314,6 +400,10 @@ def generate():
     except Exception as e:
         logger.warning("rembg failed: %s – using original", e)
         proc = concept
+
+    # Hi-res latent upscale pass (resize concept before TripoSR)
+    upscale_size = (proc.size[0] * params["upscale_factor"], proc.size[1] * params["upscale_factor"])
+    proc = proc.resize(upscale_size, Image.LANCZOS)  # Basic resize; TODO: Integrate better latent upscale if needed
 
     # TripoSR codes
     with torch.no_grad(), (autocast() if DEV == "cuda" else nullcontext()):
@@ -330,8 +420,15 @@ def generate():
         )[0]
 
     img = imgs[0]
+
+    # Apply RealESRGAN + unsharp mask (TODO: Uncomment after loading upscaler)
+    # img_tensor = torch.from_numpy(np.array(img)).permute(2, 0, 1).unsqueeze(0).float() / 255.0
+    # upscaled = upscaler.enhance(img_tensor)  # TODO: Adjust for RealESRGAN API
+    # img = Image.fromarray((upscaled.squeeze(0).permute(1, 2, 0).numpy() * 255).astype(np.uint8))
+    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))  # Unsharp mask applied
+
     buf = io.BytesIO()
-    img.save(buf, "PNG")
+    img.save(buf, "PNG", compress_level=4)  # PNG compress_level=4 per doc
     buf.seek(0)
     cache.put(key, buf)
     clear_gpu()
