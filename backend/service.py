@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 from torch.cuda.amp import autocast
 
-from PIL import Image, ImageFilter  # Added for unsharp mask
+from PIL import Image, ImageFilter  # Re-added for unsharp mask
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import psutil
@@ -160,12 +160,11 @@ def gpu_mem_mb() -> float:
 # ───────────────────────────────────────────────────────────────
 # Optimisation parameter helpers
 # ───────────────────────────────────────────────────────────────
-class OptimizedParameters:
-    DEFAULT_INFERENCE_STEPS = 50    # Reduced from 100 to pair with faster sampler
-    DEFAULT_GUIDANCE_SCALE = 9.0    # Set to 9.0 per doc
-    DEFAULT_RENDER_RES = 512        # Reduced for speed
-    DEFAULT_EDGE_RES = 512          # Reduced for speed
-    DEFAULT_UPSCALE_FACTOR = 2      # For hi-res latent upscale
+class GenerationParameters:
+    DEFAULT_INFERENCE_STEPS = 30
+    DEFAULT_GUIDANCE_SCALE = 7.5
+    DEFAULT_RENDER_RES = 512
+    DEFAULT_UPSCALE_FACTOR = 2
 
     @classmethod
     def get(cls, data):
@@ -173,7 +172,6 @@ class OptimizedParameters:
             num_inference_steps=int(data.get("num_inference_steps", cls.DEFAULT_INFERENCE_STEPS)),
             guidance_scale=float(data.get("guidance_scale", cls.DEFAULT_GUIDANCE_SCALE)),
             render_resolution=int(data.get("render_resolution", cls.DEFAULT_RENDER_RES)),
-            edge_resolution=int(data.get("edge_resolution", cls.DEFAULT_EDGE_RES)),
             upscale_factor=int(data.get("upscale_factor", cls.DEFAULT_UPSCALE_FACTOR)),
         )
 
@@ -196,7 +194,7 @@ cache = LRU()
 # ───────────────────────────────────────────────────────────────
 logger.info("Starting model initialisation …"); _flush()
 
-from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, DPMSolverMultistepScheduler  # Changed to faster DPM++ sampler
+from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, EulerAncestralDiscreteScheduler
 from controlnet_aux import CannyDetector
 import rembg
 
@@ -231,7 +229,7 @@ sd = StableDiffusionControlNetPipeline.from_pretrained(
     controlnet=cnet,
     torch_dtype=DTYPE,
 ).to(DEV)
-sd.scheduler = DPMSolverMultistepScheduler.from_config(sd.scheduler.config)
+sd.scheduler = EulerAncestralDiscreteScheduler.from_config(sd.scheduler.config)
 try:
     sd.enable_xformers_memory_efficient_attention()
     logger.info("xformers attention enabled")
@@ -364,7 +362,7 @@ def generate():
 
     key = data["sketch"][:120] + data.get("prompt", "")
     if (buf := cache.get(key)) is not None:
-        return send_file(buf, mimetype="image/png", download_name="3d.png", as_attachment=True)
+        return send_file(buf, mimetype="model/gltf", download_name="model.glb", as_attachment=True)
 
     # decode PNG
     try:
@@ -374,20 +372,25 @@ def generate():
         return jsonify(error=f"bad image data: {e}"), 400
 
     prm = data.get("prompt", "a clean 3-D asset")
-    params = OptimizedParameters.get(data)
+    params = GenerationParameters.get(data)
 
     # edge map (higher resolution per doc)
-    edge = edge_det(sketch.resize((params["edge_resolution"], params["edge_resolution"]))); del sketch
+    edge = edge_det(sketch); del sketch
 
     # Stable Diffusion
     with torch.no_grad():
-        concept, best = optimize_concept(edge, prm)
+        concept = sd(
+            prompt=prm,
+            image=edge,
+            num_inference_steps=params["num_inference_steps"],
+            guidance_scale=params["guidance_scale"],
+        ).images[0]
 
     clear_gpu()
     global last_concept_image
     last_concept_image = concept.copy()
 
-    # background removal & resize
+    # Background removal & resize (restored for quality)
     try:
         proc = remove_background(concept, rembg_session)
         proc = resize_foreground(proc, 0.85)
@@ -400,37 +403,35 @@ def generate():
 
     # Hi-res latent upscale pass (resize concept before TripoSR)
     upscale_size = (proc.size[0] * params["upscale_factor"], proc.size[1] * params["upscale_factor"])
-    proc = proc.resize(upscale_size, Image.LANCZOS)  # Basic resize; TODO: Integrate better latent upscale if needed
+    proc = proc.resize(upscale_size, Image.LANCZOS)
 
     # TripoSR codes
-    with torch.no_grad(), (autocast() if DEV == "cuda" else nullcontext()):
+    with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
         codes = triposr([proc], device=DEV)
-    clear_gpu()
 
     # render
-    with torch.no_grad(), (autocast() if DEV == "cuda" else nullcontext()):
+    with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
         imgs = triposr.render(
-            codes, n_views=1,
+            codes,
+            n_views=1,
             height=params["render_resolution"],
             width=params["render_resolution"],
             return_type="pil",
         )[0]
 
-    img = imgs[0]
+    img = imgs
 
-    # Apply RealESRGAN + unsharp mask (TODO: Uncomment after loading upscaler)
-    # img_tensor = torch.from_numpy(np.array(img)).permute(2, 0, 1).unsqueeze(0).float() / 255.0
-    # upscaled = upscaler.enhance(img_tensor)  # TODO: Adjust for RealESRGAN API
-    # img = Image.fromarray((upscaled.squeeze(0).permute(1, 2, 0).numpy() * 255).astype(np.uint8))
-    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))  # Unsharp mask applied
+    # Apply final polish with an unsharp mask
+    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
 
     buf = io.BytesIO()
-    img.save(buf, "PNG", compress_level=4)  # PNG compress_level=4 per doc
+    img.save(buf, "PNG", compress_level=4)
     buf.seek(0)
+    
     cache.put(key, buf)
     clear_gpu()
 
-    return send_file(buf, mimetype="image/png", download_name="3d.png", as_attachment=True)
+    return send_file(buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True)
 
 # ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
