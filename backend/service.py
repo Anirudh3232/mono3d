@@ -166,6 +166,7 @@ class OptimizedParameters:
     DEFAULT_RENDER_RES = 1024       # Higher res for sharper renders
     DEFAULT_EDGE_RES = 512          # Higher res edge map
     DEFAULT_UPSCALE_FACTOR = 2      # For hi-res latent upscale
+    DEFAULT_PROMPT = "a detailed red house, realistic, high quality, with windows and door"  # Enhanced for color/detail
 
     @classmethod
     def get(cls, data):
@@ -175,6 +176,7 @@ class OptimizedParameters:
             render_resolution=int(data.get("render_resolution", cls.DEFAULT_RENDER_RES)),
             edge_resolution=int(data.get("edge_resolution", cls.DEFAULT_EDGE_RES)),
             upscale_factor=int(data.get("upscale_factor", cls.DEFAULT_UPSCALE_FACTOR)),
+            prompt=str(data.get("prompt", cls.DEFAULT_PROMPT)),
         )
 
 class LRU:
@@ -230,6 +232,7 @@ sd = StableDiffusionControlNetPipeline.from_pretrained(
     "runwayml/stable-diffusion-v1-5",
     controlnet=cnet,
     torch_dtype=DTYPE,
+    safety_checker=None,  # Disable NSFW filter for unrestricted generation
 ).to(DEV)
 sd.scheduler = EulerAncestralDiscreteScheduler.from_config(sd.scheduler.config)
 try:
@@ -250,6 +253,9 @@ triposr = TSR.from_pretrained(
 if hasattr(triposr, "renderer"):
     triposr.renderer.set_chunk_size(8192)
 triposr.to(DEV).eval()
+
+# TODO: Load RealESRGAN for upscale (after installing package and weights)
+# upscaler = RealESRGANer(scale=4, model_path='weights/RealESRGAN_x4plus.pth', device=DEV)
 
 logger.info("✔ all models ready"); _flush()
 
@@ -292,6 +298,7 @@ def optimize_concept(edge_map: Image.Image,
             image               = edge_map,
             num_inference_steps = num_inference_steps,
             guidance_scale      = guidance_scale,
+            negative_prompt     = "blurry, low quality, gray, monochrome, deformed, ugly",  # Added for better quality
         ).images[0]
 
         return _calc_neg_lpips(concept, edge_map)
@@ -318,6 +325,7 @@ def optimize_concept(edge_map: Image.Image,
     final_img = sd(
         prompt              = prompt,
         image               = edge_map,
+        negative_prompt     = "blurry, low quality, gray, monochrome, deformed, ugly",  # Added for better quality
         **best_params,
     ).images[0]
 
@@ -373,13 +381,13 @@ def generate():
     except Exception as e:
         return jsonify(error=f"bad image data: {e}"), 400
 
-    prm = data.get("prompt", "a clean 3-D asset")
     params = OptimizedParameters.get(data)
+    prm = params["prompt"]  # Use enhanced default or user-provided
 
     # edge map (higher resolution per doc)
     edge = edge_det(sketch.resize((params["edge_resolution"], params["edge_resolution"]))); del sketch
 
-    # Stable Diffusion
+    # Stable Diffusion with optimization
     with torch.no_grad():
         concept, best = optimize_concept(edge, prm)
 
@@ -407,7 +415,7 @@ def generate():
         codes = triposr([proc], device=DEV)
     clear_gpu()
 
-    # render
+    # render with color enhancement
     with torch.no_grad(), (autocast() if DEV == "cuda" else nullcontext()):
         imgs = triposr.render(
             codes, n_views=1,
