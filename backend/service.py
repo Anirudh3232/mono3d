@@ -109,7 +109,6 @@ for _n in ("Cache", "DynamicCache", "EncoderDecoderCache"):
                 setattr(_mod, _n, MockEncoderDecoderCache)
         except ImportError:
             pass
-diffusers.models.attention_processor.AttnProcessor2_0 = MockCache
 import transformers.models.llama.modeling_llama
 transformers.models.llama.modeling_llama.AttnProcessor2_0 = MockCache
 import huggingface_hub as _hf_hub
