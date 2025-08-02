@@ -334,7 +334,7 @@ def generate():
             width=params["render_resolution"],
             return_type="pil",
         )[0]
-    img = imgs
+    img = imgs[0]
 
     # Apply final polish with an unsharp mask
     img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
