@@ -17,13 +17,13 @@ timm==0.9.16
 # TripoSR & image utils 
 pymcubes==0.1.4
 git+https://github.com/tatsy/torchmcubes.git
-trimesh==4.4.0
+trimesh==4.0.5
 rembg>=2.0.53,<3.0.0
 onnxruntime>=1.16.0,<2.0.0
 scipy>=1.10.0,<1.12.0
 
 numpy>=1.23,<1.27
-Pillow>=9.5,<11.0.0
+Pillow==10.1.0
 imageio==2.34.0
 
 #  API server & monitoring 
@@ -31,3 +31,4 @@ Flask==3.0.3
 Flask-Cors==4.0.1
 psutil>=5.9,<6.0
 requests>=2.31,<3.0
+mediapipe>=0.10.0,<1.0.0  # optional for controlnet_aux full functionality
