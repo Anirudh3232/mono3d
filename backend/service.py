@@ -1,4 +1,3 @@
-```1:355:backend/service.py
 #!/usr/bin/env python3
 # service.py – Mono3D Backend (Restored High-Quality Optimization)
 
@@ -428,4 +427,3 @@ def generate():
 # ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-```
