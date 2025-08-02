@@ -26,13 +26,6 @@ numpy>=1.23,<1.27
 Pillow==10.1.0
 imageio==2.34.0
 
-#  API server & monitoring 
-Flask==3.0.3
-Flask-Cors==4.0.1
-psutil>=5.9,<6.0
-requests>=2.31,<3.0
-mediapipe>=0.10.0,<1.0.0  # optional for controlnet_aux full functionality
-
 # Image enhancement (for RealESRGAN upscale)
 git+https://github.com/xinntao/Real-ESRGAN.git
 basicsr>=1.4.2,<2.0.0
@@ -43,3 +36,10 @@ opencv-python>=4.5.0,<5.0.0  # Already likely from controlnet-aux, but explicit
 # For Bayesian optimization and LPIPS
 lpips>=0.1.4,<1.0.0
 bayesian-optimization>=1.4.0,<2.0.0
+
+#  API server & monitoring 
+Flask==3.0.3
+Flask-Cors==4.0.1
+psutil>=5.9,<6.0
+requests>=2.31,<3.0
+mediapipe>=0.10.0,<1.0.0  # optional for controlnet_aux full functionality
