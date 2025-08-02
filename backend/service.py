@@ -4,7 +4,7 @@
 # ───────────────────────────────────────────────────────────────
 # Standard & third-party imports
 # ───────────────────────────────────────────────────────────────
-from typing import Callable, Optional, Tuple
+import typing as t
 import sys, os, io, time, types, importlib, logging, atexit, gc, base64
 from functools import wraps
 from contextlib import nullcontext
@@ -251,9 +251,6 @@ if hasattr(triposr, "renderer"):
     triposr.renderer.set_chunk_size(8192)
 triposr.to(DEV).eval()
 
-# TODO: Load RealESRGAN for upscale (after installing package and weights)
-# upscaler = RealESRGANer(scale=4, model_path='weights/RealESRGAN_x4plus.pth', device=DEV)
-
 logger.info("✔ all models ready"); _flush()
 
 _lpips = lpips.LPIPS(net="vgg").eval().to(DEV)   # perceptual-distance metric
@@ -273,7 +270,7 @@ def _calc_neg_lpips(img_a: Image.Image, img_b: Image.Image) -> float:
 def optimize_concept(edge_map: Image.Image,
                      prompt: str,
                      init_seed: int = 42,
-                     n_iter: int = 25) -> Tuple[Image.Image, Dict[str, float]]:
+                     n_iter: int = 25) -> t.Tuple[Image.Image, t.Dict[str, float]]:
     """
     Search for guidance_scale & num_inference_steps that give the
     closest-looking concept image to the original sketch (edge_map)
