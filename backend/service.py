@@ -1,45 +1,429 @@
-# Core (PyTorch + CUDA 11.8) 
-torch==2.2.2+cu118
-torchvision==0.17.2+cu118
-torchaudio==2.2.2+cu118
--f https://download.pytorch.org/whl/torch_stable.html
+#!/usr/bin/env python3
+# service.py – Mono3D Backend (Restored High-Quality Optimization)
 
-# Diffusion stack 
-diffusers==0.24.0
-transformers==4.36.2
-accelerate==0.24.1
-controlnet-aux==0.0.7
-huggingface_hub==0.22.2 
-einops==0.7.0
-omegaconf==2.3.0
-timm==0.9.16
+# ───────────────────────────────────────────────────────────────
+# Standard & third-party imports
+# ───────────────────────────────────────────────────────────────
+import typing as t
+import sys, os, io, time, types, importlib, logging, atexit, gc, base64
+from functools import wraps
+from contextlib import nullcontext
 
-# TripoSR & image utils 
-pymcubes==0.1.4
-git+https://github.com/tatsy/torchmcubes.git
-trimesh==4.0.5
-rembg>=2.0.53,<3.0.0
-onnxruntime>=1.16.0,<2.0.0
-scipy>=1.10.0,<1.12.0
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.cuda.amp import autocast
 
-numpy>=1.23,<1.27
-Pillow==10.1.0
-imageio==2.34.0
+from PIL import Image, ImageFilter
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
+import psutil
 
-# Image enhancement (for RealESRGAN upscale)
-git+https://github.com/xinntao/Real-ESRGAN.git
-basicsr>=1.4.2,<2.0.0
-facexlib>=0.2.5,<1.0.0
-gfpgan>=1.3.8,<2.0.0
-opencv-python>=4.5.0,<5.0.0  # Already likely from controlnet-aux, but explicit
+# R-NOTE: Re-introducing the necessary libraries for the optimization process.
+from bayes_opt import BayesianOptimization
+import lpips
+from torchvision import transforms
 
-# For Bayesian optimization and LPIPS (re-added for restored logic)
-lpips>=0.1.4,<1.0.0
-bayesian-optimization>=1.4.0,<2.0.0
+# ───────────────────────────────────────────────────────────────
+# Logging
+# ───────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler("service.log")],
+)
+logger = logging.getLogger(__name__)
 
-#  API server & monitoring 
-Flask==3.0.3
-Flask-Cors==4.0.1
-psutil>=5.9,<6.0
-requests>=2.31,<3.0
-mediapipe>=0.10.0,<1.0.0  # optional for controlnet_aux full functionality
+# ───────────────────────────────────────────────────────────────
+# Add TripoSR to path
+# ───────────────────────────────────────────────────────────────
+TRIPOSR_PATH = os.path.join(os.path.dirname(__file__), "TripoSR-main")
+if TRIPOSR_PATH not in sys.path:
+    sys.path.insert(0, TRIPOSR_PATH)
+
+# ───────────────────────────────────────────────────────────────
+# torchmcubes fallback  →  pymcubes
+# ───────────────────────────────────────────────────────────────
+def _setup_torchmcubes_fallback() -> None:
+    try:
+        import torchmcubes  # noqa: F401
+        logger.info("✅ native torchmcubes found")
+        return
+    except ModuleNotFoundError:
+        logger.info("🔧 torchmcubes missing – patching with pymcubes")
+
+    try:
+        import pymcubes as mc, torch, numpy as _np
+
+        mod = types.ModuleType("torchmcubes")
+
+        def marching_cubes(vol: torch.Tensor, thresh: float = 0.0):
+            vol_np = vol.detach().cpu().numpy()
+            v, f = mc.marching_cubes(vol_np, thresh)
+            return (
+                torch.from_numpy(v).to(vol.device),
+                torch.from_numpy(f.astype(_np.int32)).to(vol.device),
+            )
+
+        mod.marching_cubes = marching_cubes  # type: ignore
+        sys.modules["torchmcubes"] = mod
+        logger.info("✅ pymcubes shim registered as torchmcubes")
+    except ModuleNotFoundError as e:
+        raise ImportError(
+            "Neither torchmcubes nor pymcubes is available. "
+            "Run `pip install pymcubes` or build torchmcubes."
+        ) from e
+
+_setup_torchmcubes_fallback()
+
+# ───────────────────────────────────────────────────────────────
+# Mock cache classes (bypass HF/Accelerate memory caches)
+# ───────────────────────────────────────────────────────────────
+class MockCache:
+    def __init__(self, *_, **__):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def __call__(self, *args, **kwargs):
+        return None
+
+    def dim(self): return 0
+    def size(self, dim=None): return (0,) if dim is None else 0
+    def to(self, device): self.device = device; return self
+    def update(self, *_, **__): pass
+    def get_decoder_cache(self, *_, **__): return self
+    def get_encoder_cache(self, *_, **__): return self
+    def __getattr__(self, _): return self
+
+class MockEncoderDecoderCache(MockCache):
+    @property
+    def encoder(self): return self
+    @property
+    def decoder(self): return self
+
+# patch transformers / accelerate
+import transformers, diffusers.models.attention_processor
+for _n in ("Cache", "DynamicCache", "EncoderDecoderCache"):
+    for _modname in (
+        "transformers",
+        "transformers.cache_utils",
+        "transformers.models.encoder_decoder",
+    ):
+        try:
+            _mod = importlib.import_module(_modname)
+            if not hasattr(_mod, _n):
+                setattr(_mod, _n, MockEncoderDecoderCache)
+        except ImportError:
+            pass
+import transformers.models.llama.modeling_llama
+transformers.models.llama.modeling_llama.AttnProcessor2_0 = MockCache
+import huggingface_hub as _hf_hub
+if not hasattr(_hf_hub, "cached_download"):
+    _hf_hub.cached_download = _hf_hub.hf_hub_download
+_acc_mem = importlib.import_module("accelerate.utils.memory")
+if not hasattr(_acc_mem, "clear_device_cache"):
+    _acc_mem.clear_device_cache = lambda *a, **k: None
+
+# ───────────────────────────────────────────────────────────────
+# Utility decorators / helpers
+# ───────────────────────────────────────────────────────────────
+def _flush():
+    sys.stdout.flush()
+    sys.stderr.flush()
+atexit.register(_flush)
+
+def timing(fn):
+    @wraps(fn)
+    def wrap(*a, **k):
+        t0, cpu0 = time.time(), psutil.cpu_percent(None)
+        out = fn(*a, **k)
+        t1, cpu1 = time.time(), psutil.cpu_percent(None)
+        logger.info(f"{fn.__name__}: {t1-t0:.2f}s | CPU {cpu0:.1f}%→{cpu1:.1f}%")
+        return out
+    return wrap
+
+def clear_gpu():
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        if hasattr(clear_gpu, "_cnt"):
+            clear_gpu._cnt += 1
+        else:
+            clear_gpu._cnt = 0
+        if clear_gpu._cnt % 3 == 0:
+            gc.collect()
+
+def gpu_mem_mb() -> float:
+    return torch.cuda.memory_allocated() / 1024 ** 2 if torch.cuda.is_available() else 0
+
+# ───────────────────────────────────────────────────────────────
+# Parameter & Cache Helpers
+# ───────────────────────────────────────────────────────────────
+class GenerationParameters:
+    # R-NOTE: These are now only used for rendering and upscaling, not generation.
+    DEFAULT_RENDER_RES = 512
+    DEFAULT_UPSCALE_FACTOR = 2
+
+    @classmethod
+    def get(cls, data):
+        return dict(
+            render_resolution=int(data.get("render_resolution", cls.DEFAULT_RENDER_RES)),
+            upscale_factor=int(data.get("upscale_factor", cls.DEFAULT_UPSCALE_FACTOR)),
+        )
+
+class LRUCache:
+    def __init__(self, n=10):
+        self.n = n
+        self.d = {}
+        self.o = []
+    def get(self, k):
+        if k in self.d:
+            self.o.remove(k); self.o.append(k)
+            return self.d[k]
+    def put(self, k, v):
+        if len(self.d) >= self.n:
+            del self.d[self.o.pop(0)]
+        self.d[k] = v; self.o.append(k)
+
+cache = LRUCache()
+
+# ───────────────────────────────────────────────────────────────
+# Start heavy imports (after all monkey-patches)
+# ───────────────────────────────────────────────────────────────
+logger.info("Starting model initialisation …"); _flush()
+
+from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, EulerAncestralDiscreteScheduler
+from controlnet_aux import CannyDetector
+import rembg
+
+logger.info("Loading TripoSR from %s", TRIPOSR_PATH)
+from tsr.system import TSR
+from tsr.utils import remove_background, resize_foreground
+
+# ───────── device
+DEV = "cuda" if torch.cuda.is_available() else "cpu"
+logger.info("Using device: %s", DEV)
+if DEV == "cuda":
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32  = True
+
+USE_FP32 = os.environ.get("MONO3D_FP32", "false").lower() == "true"
+DTYPE = torch.float32 if USE_FP32 else torch.float16
+
+# ───────── edge detector
+edge_det = CannyDetector()
+
+# ───────── ControlNet
+cnet = ControlNetModel.from_pretrained(
+    "lllyasviel/sd-controlnet-canny",
+    torch_dtype=DTYPE,
+).to(DEV)
+
+# ───────── Stable Diffusion
+sd = StableDiffusionControlNetPipeline.from_pretrained(
+    "runwayml/stable-diffusion-v1-5",
+    controlnet=cnet,
+    torch_dtype=DTYPE,
+).to(DEV)
+sd.scheduler = EulerAncestralDiscreteScheduler.from_config(sd.scheduler.config)
+try:
+    sd.enable_xformers_memory_efficient_attention()
+    logger.info("xformers attention enabled")
+except Exception:
+    logger.warning("xformers unavailable, using default attention")
+sd.enable_model_cpu_offload()
+sd.enable_attention_slicing()
+sd.enable_vae_slicing()
+
+# ───────── TripoSR
+triposr = TSR.from_pretrained(
+    "stabilityai/TripoSR",
+    config_name="config.yaml",
+    weight_name="model.ckpt",
+)
+if hasattr(triposr, "renderer"):
+    triposr.renderer.set_chunk_size(8192)
+triposr.to(DEV).eval()
+
+# R-NOTE: Re-instating the LPIPS model for perceptual distance calculation in the optimization loop.
+_lpips = lpips.LPIPS(net="vgg").eval().to(DEV)
+_resize = transforms.Resize((512, 512), interpolation=transforms.InterpolationMode.BICUBIC)
+
+logger.info("✔ all models ready"); _flush()
+
+# ───────────────────────────────────────────────────────────────
+# Optimization Logic (Restored for High-Quality Output)
+# ───────────────────────────────────────────────────────────────
+def _calc_neg_lpips(img_a: Image.Image, img_b: Image.Image) -> float:
+    """Return *negative* LPIPS — larger is better (so we can *maximize*)."""
+    ten_a = _resize(img_a.convert("RGB"))
+    ten_b = _resize(img_b.convert("RGB"))
+    ten_a = transforms.ToTensor()(ten_a)[None].to(DEV)
+    ten_b = transforms.ToTensor()(ten_b)[None].to(DEV)
+    with torch.no_grad():
+        score = _lpips(ten_a, ten_b).item()
+    return -score
+
+def optimize_concept(edge_map: Image.Image,
+                     prompt: str,
+                     init_seed: int = 42,
+                     n_iter: int = 25) -> t.Tuple[Image.Image, t.Dict[str, float]]:
+    """
+    Search for guidance_scale & num_inference_steps that give the
+    best-looking concept image, then return the final image + best params.
+    """
+    torch.manual_seed(init_seed)
+
+    pbounds = {
+        "guidance_scale": (5.0, 15.0),
+        "num_inference_steps": (20, 80),
+    }
+
+    def _objective(guidance_scale, num_inference_steps):
+        num_inference_steps = int(num_inference_steps)
+        concept = sd(
+            prompt=prompt,
+            image=edge_map,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+        ).images[0]
+        return _calc_neg_lpips(concept, edge_map)
+
+    bo = BayesianOptimization(
+        f=_objective,
+        pbounds=pbounds,
+        verbose=0,
+        random_state=123,
+    )
+    bo.maximize(init_points=5, n_iter=n_iter)
+
+    best_params = bo.max["params"]
+    best_params["num_inference_steps"] = int(best_params["num_inference_steps"])
+
+    logger.info("=================================================")
+    logger.info("✅  Best Parameters Found:")
+    logger.info(best_params)
+    logger.info(f"Best Score (Negative LPIPS): {bo.max['target']:.4f}")
+    logger.info("=================================================")
+
+    final_img = sd(
+        prompt=prompt,
+        image=edge_map,
+        **best_params,
+    ).images[0]
+
+    return final_img, best_params
+
+# ───────────────────────────────────────────────────────────────
+# Flask app
+# ───────────────────────────────────────────────────────────────
+app = Flask(__name__)
+CORS(app)
+rembg_session = rembg.new_session()
+last_concept_image = None
+
+@app.get("/health")
+def health():
+    return jsonify(
+        status="ok",
+        gpu_mb=gpu_mem_mb(),
+        cpu=psutil.cpu_percent(None),
+        mem=psutil.virtual_memory().percent,
+    )
+
+@app.get("/latest_concept_image")
+def latest():
+    global last_concept_image
+    if last_concept_image is None:
+        return jsonify(error="no concept generated yet"), 404
+    buf = io.BytesIO()
+    last_concept_image.save(buf, "PNG")
+    buf.seek(0)
+    return send_file(buf, mimetype="image/png")
+
+# ───────────────────────────────────────────────────────────────
+# /generate endpoint
+# ───────────────────────────────────────────────────────────────
+@app.post("/generate")
+@timing
+def generate():
+    if not request.is_json:
+        return jsonify(error="JSON body required"), 400
+    data = request.json
+    if "sketch" not in data:
+        return jsonify(error="missing 'sketch'"), 400
+
+    key = data["sketch"][:120] + data.get("prompt", "")
+    cached_buf = cache.get(key)
+    if cached_buf:
+        logger.info("Returning cached result")
+        cached_buf.seek(0)
+        # R-NOTE: Corrected to return a PNG image from cache, not a GLB/GLTF file.
+        return send_file(cached_buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True)
+
+    try:
+        if "," not in data["sketch"]:
+            raise ValueError("Invalid data URI format - missing comma separator")
+        png_bytes = base64.b64decode(data["sketch"].split(",", 1)[1])
+        sketch = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+    except (base64.binascii.Error, ValueError, OSError) as e:
+        return jsonify(error=f"Invalid image data: {str(e)}"), 400
+
+    prm = data.get("prompt", "a clean 3-D asset, beautiful, high quality")
+    params = GenerationParameters.get(data)
+    edge = edge_det(sketch); del sketch
+
+    # R-NOTE: Calling the restored optimization function instead of a direct SD call.
+    # This is the key change to restore the desired output quality.
+    concept, best_params = optimize_concept(edge, prm)
+    clear_gpu()
+    global last_concept_image
+    last_concept_image = concept.copy()
+
+    # Background removal & resize
+    try:
+        proc = remove_background(concept, rembg_session)
+        proc = resize_foreground(proc, 0.85)
+        arr  = np.array(proc).astype(np.float32) / 255.0
+        arr  = arr[:, :, :3] * arr[:, :, 3:4] + (1 - arr[:, :, 3:4]) * 0.5
+        proc = Image.fromarray((arr * 255).astype(np.uint8))
+    except Exception as e:
+        logger.warning("rembg failed: %s – using original", e)
+        proc = concept
+
+    # Hi-res latent upscale pass
+    upscale_size = (proc.size[0] * params["upscale_factor"], proc.size[1] * params["upscale_factor"])
+    proc = proc.resize(upscale_size, Image.LANCZOS)
+
+    # TripoSR scene code generation
+    with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
+        codes = triposr([proc], device=DEV)
+    clear_gpu()
+
+    # Render the 3D object to a 2D image
+    with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
+        # R-NOTE: Corrected the render call to handle the list of images properly.
+        imgs = triposr.render(
+            codes,
+            n_views=1,
+            height=params["render_resolution"],
+            width=params["render_resolution"],
+            return_type="pil",
+        )[0]
+    img = imgs[0]
+
+    # Apply final polish with an unsharp mask
+    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
+
+    # Save final image to buffer
+    buf = io.BytesIO()
+    img.save(buf, "PNG", compress_level=4)
+    buf.seek(0)
+    
+    # Cache the result and send
+    cache.put(key, buf)
+    clear_gpu()
+    return send_file(buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True)
+
+# ───────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
