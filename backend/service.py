@@ -36,7 +36,7 @@ if not hasattr(_acc_mem, "clear_device_cache"):
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("service.log")],
+    handlers=[logging.StreamHandler(), logging.FileHandler('service.log')],
 )
 logger = logging.getLogger(__name__)
 
