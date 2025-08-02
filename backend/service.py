@@ -290,10 +290,12 @@ def generate():
 
     # decode PNG
     try:
+        if "," not in data["sketch"]:
+            raise ValueError("Invalid data URI format - missing comma separator")
         png_bytes = base64.b64decode(data["sketch"].split(",", 1)[1])
         sketch = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-    except Exception as e:
-        return jsonify(error=f"bad image data: {e}"), 400
+    except (base64.binascii.Error, ValueError, OSError) as e:
+        return jsonify(error=f"Invalid image data: {str(e)}"), 400
 
     prm = data.get("prompt", "a clean 3-D asset, beautiful, high quality")
     params = GenerationParameters.get(data)
