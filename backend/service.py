@@ -290,79 +290,72 @@ def generate():
 
     key = data["sketch"][:120] + data.get("prompt", "")
     if (buf := cache.get(key)) is not None:
+        buf.seek(0)
         return send_file(buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True)
 
-    # decode PNG
     try:
+        # Main logic here
         if "," not in data["sketch"]:
             raise ValueError("Invalid data URI format - missing comma separator")
         png_bytes = base64.b64decode(data["sketch"].split(",", 1)[1])
         sketch = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-    except (base64.binascii.Error, ValueError, OSError) as e:
-        return jsonify(error=f"Invalid image data: {str(e)}"), 400
 
-    prm = data.get("prompt", "a clean 3-D asset, beautiful, high quality")
-    params = GenerationParameters.get(data)
-    edge = edge_det(sketch); del sketch
+        prm = data.get("prompt", "a clean 3-D asset, beautiful, high quality")
+        params = GenerationParameters.get(data)
+        edge = edge_det(sketch); del sketch
 
-    # Calling the restored optimization function
-    concept, best_params = optimize_concept(edge, prm)
-    clear_gpu()
-    global last_concept_image
-    last_concept_image = concept.copy()
+        # Calling the restored optimization function
+        concept, best_params = optimize_concept(edge, prm)
+        clear_gpu()
+        global last_concept_image
+        last_concept_image = concept.copy()
 
-    # Background removal & resize
-    try:
-        proc = remove_background(concept, rembg_session)
-        proc = resize_foreground(proc, 0.85)
-        arr  = np.array(proc).astype(np.float32) / 255.0
-        arr  = arr[:, :, :3] * arr[:, :, 3:4] + (1 - arr[:, :, 3:4]) * 0.5
-        proc = Image.fromarray((arr * 255).astype(np.uint8))
+        # Background removal & resize
+        try:
+            proc = remove_background(concept, rembg_session)
+            proc = resize_foreground(proc, 0.85)
+            arr  = np.array(proc).astype(np.float32) / 255.0
+            arr  = arr[:, :, :3] * arr[:, :, 3:4] + (1 - arr[:, :, 3:4]) * 0.5
+            proc = Image.fromarray((arr * 255).astype(np.uint8))
+        except Exception as e:
+            logger.warning("rembg failed: %s – using original", e)
+            proc = concept
+
+        # Hi-res latent upscale pass
+        upscale_size = (proc.size[0] * params["upscale_factor"], proc.size[1] * params["upscale_factor"])
+        proc = proc.resize(upscale_size, Image.LANCZOS)
+
+        # TripoSR scene code generation
+        with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
+            codes = triposr([proc], device=DEV)
+        clear_gpu()
+
+        # Render the 3D object to a 2D image
+        with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
+            imgs = triposr.render(
+                codes,
+                n_views=1,
+                height=params["render_resolution"],
+                width=params["render_resolution"],
+                return_type="pil",
+            )[0]
+        img = imgs[0]
+
+        # Apply final polish with an unsharp mask
+        img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
+
+        # Save final image to buffer
+        buf = io.BytesIO()
+        img.save(buf, "PNG", compress_level=4)
+        buf.seek(0)
+
+        # Cache the result and send
+        cache.put(key, buf)
+        clear_gpu()
+        return send_file(buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True)
     except Exception as e:
-        logger.warning("rembg failed: %s – using original", e)
-        proc = concept
-
-    # Hi-res latent upscale pass
-    upscale_size = (proc.size[0] * params["upscale_factor"], proc.size[1] * params["upscale_factor"])
-    proc = proc.resize(upscale_size, Image.LANCZOS)
-
-    # Stable Diffusion
-    with torch.no_grad():
-        concept = sd(
-            prompt=prm + ", highly detailed, realistic lighting, sharp textures, photorealistic",
-            image=edge,
-            num_inference_steps=params["num_inference_steps"],
-            guidance_scale=params["guidance_scale"],
-        ).images[0]
-
-    # TripoSR scene code generation
-    with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
-        codes = triposr([proc], device=DEV)
-    clear_gpu()
-
-    # Render the 3D object to a 2D image
-    with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
-        imgs = triposr.render(
-            codes,
-            n_views=1,
-            height=params["render_resolution"],
-            width=params["render_resolution"],
-            return_type="pil",
-        )[0]
-    img = imgs[0]
-
-    # Apply final polish with an unsharp mask
-    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
-
-    # Save final image to buffer
-    buf = io.BytesIO()
-    img.save(buf, "PNG", compress_level=4)
-    buf.seek(0)
-    
-    # Cache the result and send
-    cache.put(key, buf)
-    clear_gpu()
-    return send_file(buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True)
+        logger.error(f"Error in generate: {str(e)}", exc_info=True)
+        return jsonify(error=f"Server error: {str(e)}"), 500
 
 # ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
