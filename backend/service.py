@@ -277,6 +277,32 @@ def latest():
     return send_file(buf, mimetype="image/png")
 
 # ───────────────────────────────────────────────────────────────
+# Concept optimization function
+# ───────────────────────────────────────────────────────────────
+@timing
+def optimize_concept(edge_image, prompt):
+    """Generate optimized concept image using Stable Diffusion with ControlNet"""
+    try:
+        with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
+            result = sd(
+                prompt=prompt,
+                image=edge_image,
+                num_inference_steps=GenerationParameters.DEFAULT_INFERENCE_STEPS,
+                guidance_scale=GenerationParameters.DEFAULT_GUIDANCE_SCALE,
+                width=edge_image.size[0],
+                height=edge_image.size[1],
+            )
+        
+        concept_image = result.images[0]
+        return concept_image, {
+            "num_inference_steps": GenerationParameters.DEFAULT_INFERENCE_STEPS,
+            "guidance_scale": GenerationParameters.DEFAULT_GUIDANCE_SCALE
+        }
+    except Exception as e:
+        logger.error(f"Error in optimize_concept: {str(e)}", exc_info=True)
+        raise
+
+# ───────────────────────────────────────────────────────────────
 # /generate endpoint
 # ───────────────────────────────────────────────────────────────
 @app.post("/generate")
@@ -304,7 +330,7 @@ def generate():
         params = GenerationParameters.get(data)
         edge = edge_det(sketch); del sketch
 
-        # Calling the restored optimization function
+        # Calling the concept optimization function
         concept, best_params = optimize_concept(edge, prm)
         clear_gpu()
         global last_concept_image
