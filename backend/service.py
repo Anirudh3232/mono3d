@@ -290,7 +290,7 @@ def generate():
 
     key = data["sketch"][:120] + data.get("prompt", "")
     if (buf := cache.get(key)) is not None:
-        return send_file(buf, mimetype="model/gltf", download_name="model.glb", as_attachment=True)
+        return send_file(buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True)
 
     # decode PNG
     try:
