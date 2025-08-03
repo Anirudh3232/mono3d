@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# service.py – Mono3D Backend (Optimized for Speed and Quality)
+# service.py  –  Mono3D backend (optimised)
 
 # ───────────────────────────────────────────────────────────────
 # Standard & third-party imports
@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 from torch.cuda.amp import autocast
 
-from PIL import Image, ImageFilter
+from PIL import Image, ImageFilter  # Re-added for unsharp mask
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import psutil
@@ -23,13 +23,20 @@ import psutil
 # Download weights: wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth -P weights
 # from RealESRGAN import RealESRGANer  # Uncomment after installation
 
+import huggingface_hub as _hf_hub
+if not hasattr(_hf_hub, "cached_download"):
+    _hf_hub.cached_download = _hf_hub.hf_hub_download
+_acc_mem = importlib.import_module("accelerate.utils.memory")
+if not hasattr(_acc_mem, "clear_device_cache"):
+    _acc_mem.clear_device_cache = lambda *a, **k: None
+
 # ───────────────────────────────────────────────────────────────
 # Logging
 # ───────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("service.log")],
+    handlers=[logging.StreamHandler(), logging.FileHandler('service.log')],
 )
 logger = logging.getLogger(__name__)
 
@@ -45,7 +52,7 @@ if TRIPOSR_PATH not in sys.path:
 # ───────────────────────────────────────────────────────────────
 def _setup_torchmcubes_fallback() -> None:
     try:
-        import torchmcubes  # noqa: F401
+        import torchmcubes                         # noqa: F401
         logger.info("✅ native torchmcubes found")
         return
     except ModuleNotFoundError:
@@ -64,7 +71,7 @@ def _setup_torchmcubes_fallback() -> None:
                 torch.from_numpy(f.astype(_np.int32)).to(vol.device),
             )
 
-        mod.marching_cubes = marching_cubes  # type: ignore
+        mod.marching_cubes = marching_cubes          # type: ignore
         sys.modules["torchmcubes"] = mod
         logger.info("✅ pymcubes shim registered as torchmcubes")
     except ModuleNotFoundError as e:
@@ -72,6 +79,7 @@ def _setup_torchmcubes_fallback() -> None:
             "Neither torchmcubes nor pymcubes is available. "
             "Run `pip install pymcubes` or build torchmcubes."
         ) from e
+
 
 _setup_torchmcubes_fallback()
 
@@ -115,12 +123,6 @@ for _n in ("Cache", "DynamicCache", "EncoderDecoderCache"):
             pass
 import transformers.models.llama.modeling_llama
 transformers.models.llama.modeling_llama.AttnProcessor2_0 = MockCache
-import huggingface_hub as _hf_hub
-if not hasattr(_hf_hub, "cached_download"):
-    _hf_hub.cached_download = _hf_hub.hf_hub_download
-_acc_mem = importlib.import_module("accelerate.utils.memory")
-if not hasattr(_acc_mem, "clear_device_cache"):
-    _acc_mem.clear_device_cache = lambda *a, **k: None
 
 # ───────────────────────────────────────────────────────────────
 # Utility decorators / helpers
@@ -154,13 +156,13 @@ def gpu_mem_mb() -> float:
     return torch.cuda.memory_allocated() / 1024 ** 2 if torch.cuda.is_available() else 0
 
 # ───────────────────────────────────────────────────────────────
-# Parameter & Cache Helpers
+# Optimisation parameter helpers
 # ───────────────────────────────────────────────────────────────
 class GenerationParameters:
-    DEFAULT_INFERENCE_STEPS = 30   # Balanced for speed and quality
-    DEFAULT_GUIDANCE_SCALE = 7.5   # Moderate guidance for coherent results
-    DEFAULT_RENDER_RES = 512
-    DEFAULT_UPSCALE_FACTOR = 2
+    DEFAULT_INFERENCE_STEPS = 50   # Increase for more detail (test 40-60)
+    DEFAULT_GUIDANCE_SCALE = 9.0   # Higher for prompt adherence (test 8.0-10.0)
+    DEFAULT_RENDER_RES = 768       # Higher for sharper PNGs (test 512-1024)
+    DEFAULT_UPSCALE_FACTOR = 4     # Stronger upscale for finer details
 
     @classmethod
     def get(cls, data):
@@ -171,11 +173,9 @@ class GenerationParameters:
             upscale_factor=int(data.get("upscale_factor", cls.DEFAULT_UPSCALE_FACTOR)),
         )
 
-class LRUCache:
+class LRU:
     def __init__(self, n=10):
-        self.n = n
-        self.d = {}
-        self.o = []
+        self.n, self.d, self.o = n, {}, []
     def get(self, k):
         if k in self.d:
             self.o.remove(k); self.o.append(k)
@@ -185,7 +185,7 @@ class LRUCache:
             del self.d[self.o.pop(0)]
         self.d[k] = v; self.o.append(k)
 
-cache = LRUCache()
+cache = LRU()
 
 # ───────────────────────────────────────────────────────────────
 # Start heavy imports (after all monkey-patches)
@@ -208,6 +208,7 @@ if DEV == "cuda":
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32  = True
 
+# Optional fp32 flag (per doc; set via env var for high-precision path)
 USE_FP32 = os.environ.get("MONO3D_FP32", "false").lower() == "true"
 DTYPE = torch.float32 if USE_FP32 else torch.float16
 
@@ -289,7 +290,7 @@ def generate():
 
     key = data["sketch"][:120] + data.get("prompt", "")
     if (buf := cache.get(key)) is not None:
-        return send_file(buf, mimetype="image/png", download_name="3d.png", as_attachment=True)
+        return send_file(buf, mimetype="model/gltf", download_name="model.glb", as_attachment=True)
 
     # decode PNG
     try:
@@ -300,26 +301,17 @@ def generate():
     except (base64.binascii.Error, ValueError, OSError) as e:
         return jsonify(error=f"Invalid image data: {str(e)}"), 400
 
-    prm = data.get("prompt", "a clean 3-D asset")
+    prm = data.get("prompt", "a clean 3-D asset, beautiful, high quality")
     params = GenerationParameters.get(data)
-
-    # edge map
     edge = edge_det(sketch); del sketch
 
-    # Stable Diffusion
-    with torch.no_grad():
-        concept = sd(
-            prompt=prm,
-            image=edge,
-            num_inference_steps=params["num_inference_steps"],
-            guidance_scale=params["guidance_scale"],
-        ).images[0]
-
+    # Calling the restored optimization function
+    concept, best_params = optimize_concept(edge, prm)
     clear_gpu()
     global last_concept_image
     last_concept_image = concept.copy()
 
-    # background removal & resize
+    # Background removal & resize
     try:
         proc = remove_background(concept, rembg_session)
         proc = resize_foreground(proc, 0.85)
@@ -332,37 +324,45 @@ def generate():
 
     # Hi-res latent upscale pass
     upscale_size = (proc.size[0] * params["upscale_factor"], proc.size[1] * params["upscale_factor"])
-    proc = proc.resize(upscale_size, Image.LANCZOS)  # Basic resize; TODO: Integrate better latent upscale if needed
+    proc = proc.resize(upscale_size, Image.LANCZOS)
 
-    # TripoSR codes
-    with torch.no_grad(), (autocast() if DEV == "cuda" else nullcontext()):
+    # Stable Diffusion
+    with torch.no_grad():
+        concept = sd(
+            prompt=prm + ", highly detailed, realistic lighting, sharp textures, photorealistic",
+            image=edge,
+            num_inference_steps=params["num_inference_steps"],
+            guidance_scale=params["guidance_scale"],
+        ).images[0]
+
+    # TripoSR scene code generation
+    with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
         codes = triposr([proc], device=DEV)
     clear_gpu()
 
-    # render
-    with torch.no_grad(), (autocast() if DEV == "cuda" else nullcontext()):
+    # Render the 3D object to a 2D image
+    with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
         imgs = triposr.render(
-            codes, n_views=1,
+            codes,
+            n_views=1,
             height=params["render_resolution"],
             width=params["render_resolution"],
             return_type="pil",
         )[0]
-
     img = imgs[0]
 
-    # Apply RealESRGAN + unsharp mask (TODO: Uncomment after loading upscaler)
-    # img_tensor = torch.from_numpy(np.array(img)).permute(2, 0, 1).unsqueeze(0).float() / 255.0
-    # upscaled = upscaler.enhance(img_tensor)  # TODO: Adjust for RealESRGAN API
-    # img = Image.fromarray((upscaled.squeeze(0).permute(1, 2, 0).numpy() * 255).astype(np.uint8))
-    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))  # Unsharp mask applied
+    # Apply final polish with an unsharp mask
+    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
 
+    # Save final image to buffer
     buf = io.BytesIO()
-    img.save(buf, "PNG", compress_level=4)  # PNG compress_level=4 per doc
+    img.save(buf, "PNG", compress_level=4)
     buf.seek(0)
+    
+    # Cache the result and send
     cache.put(key, buf)
     clear_gpu()
-
-    return send_file(buf, mimetype="image/png", download_name="3d.png", as_attachment=True)
+    return send_file(buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True)
 
 # ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
