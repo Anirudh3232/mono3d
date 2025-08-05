@@ -1,9 +1,4 @@
-#!/usr/bin/env python3
-# service.py  –  Mono3D backend (optimised)
 
-# ───────────────────────────────────────────────────────────────
-# Standard & third-party imports
-# ───────────────────────────────────────────────────────────────
 import typing as t
 import sys, os, io, time, types, importlib, logging, atexit, gc, base64
 from functools import wraps
