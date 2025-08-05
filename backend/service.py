@@ -14,9 +14,7 @@ from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import psutil
 
-# TODO: Install RealESRGAN (pip install git+https://github.com/xinntao/Real-ESRGAN.git)
-# Download weights: wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth -P weights
-# from RealESRGAN import RealESRGANer  # Uncomment after installation
+
 
 import huggingface_hub as _hf_hub
 if not hasattr(_hf_hub, "cached_download"):
@@ -25,9 +23,6 @@ _acc_mem = importlib.import_module("accelerate.utils.memory")
 if not hasattr(_acc_mem, "clear_device_cache"):
     _acc_mem.clear_device_cache = lambda *a, **k: None
 
-# ───────────────────────────────────────────────────────────────
-# Logging
-# ───────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -35,16 +30,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ───────────────────────────────────────────────────────────────
-# Add TripoSR to path
-# ───────────────────────────────────────────────────────────────
+
 TRIPOSR_PATH = os.path.join(os.path.dirname(__file__), "TripoSR-main")
 if TRIPOSR_PATH not in sys.path:
     sys.path.insert(0, TRIPOSR_PATH)
 
-# ───────────────────────────────────────────────────────────────
-# torchmcubes fallback  →  pymcubes
-# ───────────────────────────────────────────────────────────────
+
 def _setup_torchmcubes_fallback() -> None:
     try:
         import torchmcubes                         # noqa: F401
@@ -78,9 +69,7 @@ def _setup_torchmcubes_fallback() -> None:
 
 _setup_torchmcubes_fallback()
 
-# ───────────────────────────────────────────────────────────────
-# Mock cache classes (bypass HF/Accelerate memory caches)
-# ───────────────────────────────────────────────────────────────
+
 class MockCache:
     def __init__(self, *_, **__):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -119,9 +108,7 @@ for _n in ("Cache", "DynamicCache", "EncoderDecoderCache"):
 import transformers.models.llama.modeling_llama
 transformers.models.llama.modeling_llama.AttnProcessor2_0 = MockCache
 
-# ───────────────────────────────────────────────────────────────
-# Utility decorators / helpers
-# ───────────────────────────────────────────────────────────────
+
 def _flush():
     sys.stdout.flush()
     sys.stderr.flush()
@@ -150,9 +137,7 @@ def clear_gpu():
 def gpu_mem_mb() -> float:
     return torch.cuda.memory_allocated() / 1024 ** 2 if torch.cuda.is_available() else 0
 
-# ───────────────────────────────────────────────────────────────
-# Optimisation parameter helpers
-# ───────────────────────────────────────────────────────────────
+
 class GenerationParameters:
     DEFAULT_INFERENCE_STEPS = 50   # Increase for more detail (test 40-60)
     DEFAULT_GUIDANCE_SCALE = 9.0   # Higher for prompt adherence (test 8.0-10.0)
@@ -182,9 +167,7 @@ class LRU:
 
 cache = LRU()
 
-# ───────────────────────────────────────────────────────────────
-# Start heavy imports (after all monkey-patches)
-# ───────────────────────────────────────────────────────────────
+
 logger.info("Starting model initialisation …"); _flush()
 
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, EulerAncestralDiscreteScheduler
@@ -195,7 +178,7 @@ logger.info("Loading TripoSR from %s", TRIPOSR_PATH)
 from tsr.system import TSR
 from tsr.utils import remove_background, resize_foreground
 
-# ───────── device
+
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
 logger.info("Using device: %s", DEV)
 if DEV == "cuda":
@@ -203,20 +186,20 @@ if DEV == "cuda":
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32  = True
 
-# Optional fp32 flag (per doc; set via env var for high-precision path)
+
 USE_FP32 = os.environ.get("MONO3D_FP32", "false").lower() == "true"
 DTYPE = torch.float32 if USE_FP32 else torch.float16
 
-# ───────── edge detector
+
 edge_det = CannyDetector()
 
-# ───────── ControlNet
+
 cnet = ControlNetModel.from_pretrained(
     "lllyasviel/sd-controlnet-canny",
     torch_dtype=DTYPE,
 ).to(DEV)
 
-# ───────── Stable Diffusion
+
 sd = StableDiffusionControlNetPipeline.from_pretrained(
     "runwayml/stable-diffusion-v1-5",
     controlnet=cnet,
@@ -232,7 +215,7 @@ sd.enable_model_cpu_offload()
 sd.enable_attention_slicing()
 sd.enable_vae_slicing()
 
-# ───────── TripoSR
+
 triposr = TSR.from_pretrained(
     "stabilityai/TripoSR",
     config_name="config.yaml",
@@ -244,9 +227,7 @@ triposr.to(DEV).eval()
 
 logger.info("✔ all models ready"); _flush()
 
-# ───────────────────────────────────────────────────────────────
-# Flask app
-# ───────────────────────────────────────────────────────────────
+
 app = Flask(__name__)
 CORS(app)
 rembg_session = rembg.new_session()
@@ -271,9 +252,7 @@ def latest():
     buf.seek(0)
     return send_file(buf, mimetype="image/png")
 
-# ───────────────────────────────────────────────────────────────
-# Concept optimization function
-# ───────────────────────────────────────────────────────────────
+
 @timing
 def optimize_concept(edge_image, prompt):
     """Generate optimized concept image using Stable Diffusion with ControlNet"""
@@ -297,9 +276,7 @@ def optimize_concept(edge_image, prompt):
         logger.error(f"Error in optimize_concept: {str(e)}", exc_info=True)
         raise
 
-# ───────────────────────────────────────────────────────────────
-# /generate endpoint
-# ───────────────────────────────────────────────────────────────
+
 @app.post("/generate")
 @timing
 def generate():
@@ -315,7 +292,7 @@ def generate():
         return send_file(buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True)
 
     try:
-        # Main logic here
+        
         if "," not in data["sketch"]:
             raise ValueError("Invalid data URI format - missing comma separator")
         png_bytes = base64.b64decode(data["sketch"].split(",", 1)[1])
@@ -325,13 +302,13 @@ def generate():
         params = GenerationParameters.get(data)
         edge = edge_det(sketch); del sketch
 
-        # Calling the concept optimization function
+      
         concept, best_params = optimize_concept(edge, prm)
         clear_gpu()
         global last_concept_image
         last_concept_image = concept.copy()
 
-        # Background removal & resize
+       
         try:
             proc = remove_background(concept, rembg_session)
             proc = resize_foreground(proc, 0.85)
@@ -342,16 +319,16 @@ def generate():
             logger.warning("rembg failed: %s – using original", e)
             proc = concept
 
-        # Hi-res latent upscale pass
+        
         upscale_size = (proc.size[0] * params["upscale_factor"], proc.size[1] * params["upscale_factor"])
         proc = proc.resize(upscale_size, Image.LANCZOS)
 
-        # TripoSR scene code generation
+       
         with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
             codes = triposr([proc], device=DEV)
         clear_gpu()
 
-        # Render the 3D object to a 2D image
+        
         with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
             imgs = triposr.render(
                 codes,
@@ -362,15 +339,15 @@ def generate():
             )[0]
         img = imgs[0]
 
-        # Apply final polish with an unsharp mask
+       
         img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
 
-        # Save final image to buffer
+     
         buf = io.BytesIO()
         img.save(buf, "PNG", compress_level=4)
         buf.seek(0)
 
-        # Cache the result and send
+       
         cache.put(key, buf)
         clear_gpu()
         return send_file(buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True)
@@ -378,6 +355,6 @@ def generate():
         logger.error(f"Error in generate: {str(e)}", exc_info=True)
         return jsonify(error=f"Server error: {str(e)}"), 500
 
-# ───────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
