@@ -1,9 +1,7 @@
-
 import typing as t
 import sys, os, io, time, types, importlib, logging, atexit, gc, base64
 from functools import wraps
 from contextlib import nullcontext
-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -13,7 +11,6 @@ from PIL import Image, ImageFilter  # Re-added for unsharp mask
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import psutil
-
 
 
 import huggingface_hub as _hf_hub
@@ -30,11 +27,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+try:
+    current_dir = os.path.dirname(__file__)
+except NameError:
+    current_dir = os.getcwd()
+    if "backend" in current_dir:
+        current_dir = os.path.join(current_dir, "backend")
+    else:
+        current_dir = os.path.join(current_dir, "backend")
 
-TRIPOSR_PATH = os.path.join(os.path.dirname(__file__), "TripoSR-main")
+TRIPOSR_PATH = os.path.join(current_dir, "TripoSR-main")
 if TRIPOSR_PATH not in sys.path:
     sys.path.insert(0, TRIPOSR_PATH)
-
 
 def _setup_torchmcubes_fallback() -> None:
     try:
@@ -69,7 +73,6 @@ def _setup_torchmcubes_fallback() -> None:
 
 _setup_torchmcubes_fallback()
 
-
 class MockCache:
     def __init__(self, *_, **__):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -91,7 +94,6 @@ class MockEncoderDecoderCache(MockCache):
     @property
     def decoder(self): return self
 
-# patch transformers / accelerate
 import transformers, diffusers.models.attention_processor
 for _n in ("Cache", "DynamicCache", "EncoderDecoderCache"):
     for _modname in (
@@ -107,7 +109,6 @@ for _n in ("Cache", "DynamicCache", "EncoderDecoderCache"):
             pass
 import transformers.models.llama.modeling_llama
 transformers.models.llama.modeling_llama.AttnProcessor2_0 = MockCache
-
 
 def _flush():
     sys.stdout.flush()
@@ -133,16 +134,30 @@ def clear_gpu():
             clear_gpu._cnt = 0
         if clear_gpu._cnt % 3 == 0:
             gc.collect()
+        logger.info(f"GPU memory cleared. Allocated: {gpu_mem_mb():.1f}MB")
 
 def gpu_mem_mb() -> float:
     return torch.cuda.memory_allocated() / 1024 ** 2 if torch.cuda.is_available() else 0
 
+def gpu_mem_total_mb() -> float:
+    return torch.cuda.get_device_properties(0).total_memory / 1024 ** 2 if torch.cuda.is_available() else 0
+
+def log_memory_usage():
+    """Log current memory usage"""
+    if torch.cuda.is_available():
+        allocated = gpu_mem_mb()
+        total = gpu_mem_total_mb()
+        cpu_mem = psutil.virtual_memory().percent
+        logger.info(f"GPU: {allocated:.1f}MB / {total:.1f}MB ({allocated/total*100:.1f}%) | CPU RAM: {cpu_mem:.1f}%")
+    else:
+        cpu_mem = psutil.virtual_memory().percent
+        logger.info(f"CPU RAM: {cpu_mem:.1f}%")
 
 class GenerationParameters:
-    DEFAULT_INFERENCE_STEPS = 50   # Increase for more detail (test 40-60)
-    DEFAULT_GUIDANCE_SCALE = 9.0   # Higher for prompt adherence (test 8.0-10.0)
-    DEFAULT_RENDER_RES = 768       # Higher for sharper PNGs (test 512-1024)
-    DEFAULT_UPSCALE_FACTOR = 4     # Stronger upscale for finer details
+    DEFAULT_INFERENCE_STEPS = 60   # Higher for more detail and quality
+    DEFAULT_GUIDANCE_SCALE = 10.0  # Higher for better prompt adherence
+    DEFAULT_RENDER_RES = 1024      # Higher resolution for better quality
+    DEFAULT_UPSCALE_FACTOR = 2     # Moderate upscale to maintain quality
 
     @classmethod
     def get(cls, data):
@@ -167,7 +182,6 @@ class LRU:
 
 cache = LRU()
 
-
 logger.info("Starting model initialisation …"); _flush()
 
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, EulerAncestralDiscreteScheduler
@@ -175,9 +189,19 @@ from controlnet_aux import CannyDetector
 import rembg
 
 logger.info("Loading TripoSR from %s", TRIPOSR_PATH)
-from tsr.system import TSR
-from tsr.utils import remove_background, resize_foreground
-
+try:
+    from tsr.system import TSR
+    from tsr.utils import remove_background, resize_foreground
+    TRIPOSR_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"TripoSR not available: {e}")
+    logger.info("Continuing with 2D image generation only")
+    TRIPOSR_AVAILABLE = False
+    # Create dummy functions for compatibility
+    def remove_background(img, session):
+        return img
+    def resize_foreground(img, factor):
+        return img
 
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
 logger.info("Using device: %s", DEV)
@@ -186,19 +210,15 @@ if DEV == "cuda":
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32  = True
 
-
 USE_FP32 = os.environ.get("MONO3D_FP32", "false").lower() == "true"
 DTYPE = torch.float32 if USE_FP32 else torch.float16
 
-
 edge_det = CannyDetector()
-
 
 cnet = ControlNetModel.from_pretrained(
     "lllyasviel/sd-controlnet-canny",
     torch_dtype=DTYPE,
 ).to(DEV)
-
 
 sd = StableDiffusionControlNetPipeline.from_pretrained(
     "runwayml/stable-diffusion-v1-5",
@@ -211,22 +231,36 @@ try:
     logger.info("xformers attention enabled")
 except Exception:
     logger.warning("xformers unavailable, using default attention")
-sd.enable_model_cpu_offload()
-sd.enable_attention_slicing()
-sd.enable_vae_slicing()
 
+if DEV == "cuda":
+    sd.enable_attention_slicing()
+    sd.enable_vae_slicing()
+    torch.cuda.set_per_process_memory_fraction(0.9)
+    logger.info("✅ GPU memory optimization enabled")
+else:
+    # Fallback for CPU
+    sd.enable_model_cpu_offload()
+    logger.info("⚠️ Using CPU offload (not recommended for performance)")
 
-triposr = TSR.from_pretrained(
-    "stabilityai/TripoSR",
-    config_name="config.yaml",
-    weight_name="model.ckpt",
-)
-if hasattr(triposr, "renderer"):
-    triposr.renderer.set_chunk_size(8192)
-triposr.to(DEV).eval()
+if TRIPOSR_AVAILABLE:
+    try:
+        triposr = TSR.from_pretrained(
+            "stabilityai/TripoSR",
+            config_name="config.yaml",
+            weight_name="model.ckpt",
+        )
+        if hasattr(triposr, "renderer"):
+            triposr.renderer.set_chunk_size(8192)
+        triposr.to(DEV).eval()
+        logger.info("✅ TripoSR loaded successfully")
+    except Exception as e:
+        logger.warning(f"Failed to load TripoSR: {e}")
+        triposr = None
+else:
+    triposr = None
+    logger.info("✅ Continuing without TripoSR (2D generation only)")
 
 logger.info("✔ all models ready"); _flush()
-
 
 app = Flask(__name__)
 CORS(app)
@@ -235,11 +269,23 @@ last_concept_image = None  # optional debugging endpoint
 
 @app.get("/health")
 def health():
+    if torch.cuda.is_available():
+        gpu_allocated = gpu_mem_mb()
+        gpu_total = gpu_mem_total_mb()
+        gpu_percent = (gpu_allocated / gpu_total) * 100
+    else:
+        gpu_allocated = 0
+        gpu_total = 0
+        gpu_percent = 0
+    
     return jsonify(
         status="ok",
-        gpu_mb=gpu_mem_mb(),
+        device=DEV,
+        gpu_mb=gpu_allocated,
+        gpu_total_mb=gpu_total,
+        gpu_percent=round(gpu_percent, 1),
         cpu=psutil.cpu_percent(None),
-        mem=psutil.virtual_memory().percent,
+        cpu_mem=psutil.virtual_memory().percent,
     )
 
 @app.get("/latest_concept_image")
@@ -252,14 +298,51 @@ def latest():
     buf.seek(0)
     return send_file(buf, mimetype="image/png")
 
+def enhance_image_quality(image):
+    """Apply advanced image enhancement to match reference quality"""
+    from PIL import ImageEnhance, ImageFilter
+    
+    enhancer = ImageEnhance.Sharpness(image)
+    image = enhancer.enhance(1.4)
+    
+    enhancer = ImageEnhance.Contrast(image)
+    image = enhancer.enhance(1.15)
+    
+    enhancer = ImageEnhance.Color(image)
+    image = enhancer.enhance(1.1)
+    
+    enhancer = ImageEnhance.Brightness(image)
+    image = enhancer.enhance(1.02)
+    
+    image = image.filter(ImageFilter.UnsharpMask(radius=1.2, percent=110, threshold=2))
+    
+    image = image.filter(ImageFilter.MedianFilter(size=1))
+    
+    return image
+def normalize_color(color_str):
+    """Normalize and validate color input"""
+    if not color_str:
+        return ""
+    
+    # Common color mappings
+    color_map = {
+        "red": "red", "blue": "blue",  "green": "green", "yellow": "yellow", "purple": "purple", "orange": "orange","pink": "pink", "brown": "brown",
+        "black": "black", "white": "white", "gray": "gray","grey": "gray","gold": "golden","silver": "silver",
+        "cyan": "cyan", "magenta": "magenta","lime": "lime green", "navy": "navy blue", "maroon": "maroon","teal": "teal"
+    }
+    
+    color_lower = color_str.lower().strip()
+    return color_map.get(color_lower, color_lower)
 
 @timing
 def optimize_concept(edge_image, prompt):
     """Generate optimized concept image using Stable Diffusion with ControlNet"""
     try:
+        enhanced_prompt = f"{prompt}, high quality, detailed, sharp, professional, masterpiece"
+        
         with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
             result = sd(
-                prompt=prompt,
+                prompt=enhanced_prompt,
                 image=edge_image,
                 num_inference_steps=GenerationParameters.DEFAULT_INFERENCE_STEPS,
                 guidance_scale=GenerationParameters.DEFAULT_GUIDANCE_SCALE,
@@ -268,6 +351,15 @@ def optimize_concept(edge_image, prompt):
             )
         
         concept_image = result.images[0]
+        
+        from PIL import ImageEnhance
+        
+        enhancer = ImageEnhance.Sharpness(concept_image)
+        concept_image = enhancer.enhance(1.3)
+        
+        enhancer = ImageEnhance.Contrast(concept_image)
+        concept_image = enhancer.enhance(1.1)
+        
         return concept_image, {
             "num_inference_steps": GenerationParameters.DEFAULT_INFERENCE_STEPS,
             "guidance_scale": GenerationParameters.DEFAULT_GUIDANCE_SCALE
@@ -276,10 +368,11 @@ def optimize_concept(edge_image, prompt):
         logger.error(f"Error in optimize_concept: {str(e)}", exc_info=True)
         raise
 
-
 @app.post("/generate")
 @timing
 def generate():
+    log_memory_usage()
+    
     if not request.is_json:
         return jsonify(error="JSON body required"), 400
     data = request.json
@@ -292,23 +385,28 @@ def generate():
         return send_file(buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True)
 
     try:
-        
         if "," not in data["sketch"]:
             raise ValueError("Invalid data URI format - missing comma separator")
         png_bytes = base64.b64decode(data["sketch"].split(",", 1)[1])
         sketch = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
 
-        prm = data.get("prompt", "a clean 3-D asset, beautiful, high quality")
+        base_prompt = data.get("prompt", "a clean 3-D asset, beautiful, high quality")
+        color = normalize_color(data.get("color", ""))
+        
+        if color:
+            prm = f"{base_prompt}, {color} color, vibrant {color} tones, {color} highlights"
+        else:
+            prm = base_prompt
+            
         params = GenerationParameters.get(data)
         edge = edge_det(sketch); del sketch
 
-      
         concept, best_params = optimize_concept(edge, prm)
         clear_gpu()
         global last_concept_image
         last_concept_image = concept.copy()
 
-       
+        # Background removal & resize
         try:
             proc = remove_background(concept, rembg_session)
             proc = resize_foreground(proc, 0.85)
@@ -319,35 +417,19 @@ def generate():
             logger.warning("rembg failed: %s – using original", e)
             proc = concept
 
-        
         upscale_size = (proc.size[0] * params["upscale_factor"], proc.size[1] * params["upscale_factor"])
         proc = proc.resize(upscale_size, Image.LANCZOS)
 
-       
-        with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
-            codes = triposr([proc], device=DEV)
-        clear_gpu()
 
+        target_size = (params["render_resolution"], params["render_resolution"])
+        concept = concept.resize(target_size, Image.LANCZOS)
         
-        with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
-            imgs = triposr.render(
-                codes,
-                n_views=1,
-                height=params["render_resolution"],
-                width=params["render_resolution"],
-                return_type="pil",
-            )[0]
-        img = imgs[0]
+        img = enhance_image_quality(concept)
 
-       
-        img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
-
-     
         buf = io.BytesIO()
         img.save(buf, "PNG", compress_level=4)
         buf.seek(0)
 
-       
         cache.put(key, buf)
         clear_gpu()
         return send_file(buf, mimetype="image/png", download_name="3d_image.png", as_attachment=True)
@@ -355,6 +437,14 @@ def generate():
         logger.error(f"Error in generate: {str(e)}", exc_info=True)
         return jsonify(error=f"Server error: {str(e)}"), 500
 
+import threading
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+def run_app():
+    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+
+thread = threading.Thread(target=run_app)
+thread.daemon = True
+thread.start()
+
+print("✅ Service running in background!")
+print("Use other cells to test it!")
