@@ -43,7 +43,7 @@ if TRIPOSR_PATH not in sys.path:
 def _setup_torchmcubes_fallback() -> None:
     try:
         import torchmcubes                         # noqa: F401
-        logger.info("✅ native torchmcubes found")
+        logger.info(" native torchmcubes found")
         return
     except ModuleNotFoundError:
         logger.info("🔧 torchmcubes missing – patching with pymcubes")
@@ -63,7 +63,7 @@ def _setup_torchmcubes_fallback() -> None:
 
         mod.marching_cubes = marching_cubes          # type: ignore
         sys.modules["torchmcubes"] = mod
-        logger.info("✅ pymcubes shim registered as torchmcubes")
+        logger.info(" pymcubes shim registered as torchmcubes")
     except ModuleNotFoundError as e:
         raise ImportError(
             "Neither torchmcubes nor pymcubes is available. "
@@ -446,5 +446,5 @@ thread = threading.Thread(target=run_app)
 thread.daemon = True
 thread.start()
 
-print("✅ Service running in background!")
+print(" Service running in background!")
 print("Use other cells to test it!")
