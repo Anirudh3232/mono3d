@@ -1,3 +1,9 @@
+#!/usr/bin/env python3
+# service.py  –  Mono3D backend (optimised)
+
+# ───────────────────────────────────────────────────────────────
+# Standard & third-party imports
+# ───────────────────────────────────────────────────────────────
 import sys
 import os
 import io
@@ -20,6 +26,9 @@ from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import psutil
 
+# ───────────────────────────────────────────────────────────────
+# Logging (define early so we can use logger in any fallback code)
+# ───────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -45,6 +54,45 @@ try:
         _acc_mem.clear_device_cache = lambda *a, **k: None
 except Exception:  # pragma: no cover
     logger.warning("accelerate.utils.memory not available")
+
+# peft shim: Some environments have incompatible peft↔huggingface_hub versions
+# Diffusers optionally imports peft.PeftModel; if that import fails due to
+# environment mismatch, we register a minimal stub so pipelines can load.
+def _setup_peft_shim() -> None:
+    try:
+        import peft  # noqa: F401
+        return
+    except Exception as e:  # pragma: no cover
+        logger.info(f"peft unavailable ({e.__class__.__name__}: {e}) – registering minimal shim")
+
+    try:
+        import torch.nn as nn
+    except Exception:  # very unlikely; if torch missing nothing else works anyway
+        nn = None  # type: ignore
+
+    mod = types.ModuleType("peft")
+
+    if nn is not None:
+        class PeftModel(nn.Module):  # type: ignore[name-defined]
+            def __init__(self, base_model: nn.Module | None = None, *_a, **_k):
+                super().__init__()
+                self.base_model = base_model
+
+            def forward(self, *a, **k):  # noqa: D401
+                if self.base_model is None:
+                    raise RuntimeError("peft shim: no base model provided")
+                return self.base_model(*a, **k)
+
+        mod.PeftModel = PeftModel  # type: ignore[attr-defined]
+    else:
+        def _noop(*_a, **_k):  # pragma: no cover
+            raise RuntimeError("peft shim: torch.nn not available")
+
+        mod.PeftModel = _noop  # type: ignore[attr-defined]
+
+    sys.modules["peft"] = mod
+
+_setup_peft_shim()
 
 # ───────────────────────────────────────────────────────────────
 # Add TripoSR to path
