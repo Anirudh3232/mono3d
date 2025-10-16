@@ -71,6 +71,12 @@ def _setup_peft_shim() -> None:
         nn = None  # type: ignore
 
     mod = types.ModuleType("peft")
+    try:
+        import importlib.machinery as _machinery
+        mod.__spec__ = _machinery.ModuleSpec("peft", loader=None)  # type: ignore[attr-defined]
+        mod.__path__ = []  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
     if nn is not None:
         class PeftModel(nn.Module):  # type: ignore[name-defined]
