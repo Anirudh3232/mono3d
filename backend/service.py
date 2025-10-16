@@ -96,19 +96,9 @@ def _setup_peft_shim() -> None:
 
         mod.PeftModel = _noop  # type: ignore[attr-defined]
 
-    # Provide permissive dynamic attribute resolution so any symbol import succeeds
-    def _module_getattr(_name: str):  # pragma: no cover
-        class _Noop:
-            def __init__(self, *a, **k):
-                pass
-
-            def __call__(self, *a, **k):
-                return None
-
-        return _Noop()
-
+    # Provide a stable __file__ for inspection tools
     try:
-        mod.__getattr__ = _module_getattr  # type: ignore[attr-defined]
+        mod.__file__ = __file__  # type: ignore[attr-defined]
     except Exception:
         pass
 
@@ -122,7 +112,7 @@ def _setup_peft_shim() -> None:
         pass
 
     try:
-        tuners_mod.__getattr__ = _module_getattr  # type: ignore[attr-defined]
+        tuners_mod.__file__ = __file__  # type: ignore[attr-defined]
     except Exception:
         pass
 
@@ -136,7 +126,7 @@ def _setup_peft_shim() -> None:
         pass
 
     try:
-        tuners_utils_mod.__getattr__ = _module_getattr  # type: ignore[attr-defined]
+        tuners_utils_mod.__file__ = __file__  # type: ignore[attr-defined]
     except Exception:
         pass
 
