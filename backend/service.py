@@ -96,6 +96,22 @@ def _setup_peft_shim() -> None:
 
         mod.PeftModel = _noop  # type: ignore[attr-defined]
 
+    # Provide permissive dynamic attribute resolution so any symbol import succeeds
+    def _module_getattr(_name: str):  # pragma: no cover
+        class _Noop:
+            def __init__(self, *a, **k):
+                pass
+
+            def __call__(self, *a, **k):
+                return None
+
+        return _Noop()
+
+    try:
+        mod.__getattr__ = _module_getattr  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
     # Provide minimal submodule `peft.tuners` expected by some import paths
     tuners_mod = types.ModuleType("peft.tuners")
     try:
@@ -105,10 +121,32 @@ def _setup_peft_shim() -> None:
     except Exception:
         pass
 
+    try:
+        tuners_mod.__getattr__ = _module_getattr  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    # Provide nested submodule `peft.tuners.tuners_utils` and make it permissive
+    tuners_utils_mod = types.ModuleType("peft.tuners.tuners_utils")
+    try:
+        import importlib.machinery as _machinery3
+        tuners_utils_mod.__spec__ = _machinery3.ModuleSpec("peft.tuners.tuners_utils", loader=None)  # type: ignore[attr-defined]
+        tuners_utils_mod.__path__ = []  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    try:
+        tuners_utils_mod.__getattr__ = _module_getattr  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    tuners_mod.tuners_utils = tuners_utils_mod  # type: ignore[attr-defined]
+
     mod.tuners = tuners_mod  # type: ignore[attr-defined]
 
     sys.modules["peft"] = mod
     sys.modules["peft.tuners"] = tuners_mod
+    sys.modules["peft.tuners.tuners_utils"] = tuners_utils_mod
 
 _setup_peft_shim()
 
