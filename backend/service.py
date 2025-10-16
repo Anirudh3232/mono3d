@@ -130,6 +130,28 @@ def _setup_peft_shim() -> None:
     except Exception:
         pass
 
+    # Minimal symbols used by some integrations
+    class BaseTunerLayer:  # type: ignore[too-many-instance-attributes]
+        def __init__(self, *_a, **_k):
+            pass
+
+        def to(self, *_a, **_k):
+            return self
+
+        def eval(self):
+            return self
+
+        def train(self, _mode: bool = True):
+            return self
+
+        def state_dict(self, *_a, **_k):
+            return {}
+
+        def load_state_dict(self, *_a, **_k):
+            return None
+
+    tuners_utils_mod.BaseTunerLayer = BaseTunerLayer  # type: ignore[attr-defined]
+
     tuners_mod.tuners_utils = tuners_utils_mod  # type: ignore[attr-defined]
 
     mod.tuners = tuners_mod  # type: ignore[attr-defined]
