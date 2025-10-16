@@ -96,7 +96,19 @@ def _setup_peft_shim() -> None:
 
         mod.PeftModel = _noop  # type: ignore[attr-defined]
 
+    # Provide minimal submodule `peft.tuners` expected by some import paths
+    tuners_mod = types.ModuleType("peft.tuners")
+    try:
+        import importlib.machinery as _machinery2
+        tuners_mod.__spec__ = _machinery2.ModuleSpec("peft.tuners", loader=None)  # type: ignore[attr-defined]
+        tuners_mod.__path__ = []  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    mod.tuners = tuners_mod  # type: ignore[attr-defined]
+
     sys.modules["peft"] = mod
+    sys.modules["peft.tuners"] = tuners_mod
 
 _setup_peft_shim()
 
