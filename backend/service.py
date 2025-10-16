@@ -352,6 +352,7 @@ class GenerationParameters:
     DEFAULT_GUIDANCE_SCALE = 10.0
     DEFAULT_RENDER_RES = 1024
     DEFAULT_UPSCALE_FACTOR = 2
+    DEFAULT_CONTROLNET_SCALE = 0.6
 
     @classmethod
     def get(cls, data: dict):
@@ -360,6 +361,8 @@ class GenerationParameters:
             guidance_scale=float(data.get("guidance_scale", cls.DEFAULT_GUIDANCE_SCALE)),
             render_resolution=int(data.get("render_resolution", cls.DEFAULT_RENDER_RES)),
             upscale_factor=int(data.get("upscale_factor", cls.DEFAULT_UPSCALE_FACTOR)),
+            controlnet_scale=float(data.get("controlnet_scale", cls.DEFAULT_CONTROLNET_SCALE)),
+            negative_prompt=str(data.get("negative_prompt", "")),
         )
 
 
@@ -604,11 +607,15 @@ def optimize_concept(edge_image: Image.Image, prompt: str, params: dict) -> tupl
         with torch.no_grad(), (autocast(dtype=DTYPE) if DEV == "cuda" else nullcontext()):
             result = sd(
                 prompt=enhanced_prompt,
+                negative_prompt=str(params.get("negative_prompt", "")),
                 image=edge_image,
                 num_inference_steps=int(params.get("num_inference_steps", GenerationParameters.DEFAULT_INFERENCE_STEPS)),
                 guidance_scale=float(params.get("guidance_scale", GenerationParameters.DEFAULT_GUIDANCE_SCALE)),
                 width=edge_image.size[0],
                 height=edge_image.size[1],
+                controlnet_conditioning_scale=float(
+                    params.get("controlnet_scale", GenerationParameters.DEFAULT_CONTROLNET_SCALE)
+                ),
             )
 
         concept_image = result.images[0]
